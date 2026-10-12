@@ -1,0 +1,9 @@
+{
+  "name": "shaim-landing",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Shaim landing page (issue #2) — single static index.html",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

@@ -7,3 +7,6 @@ dist/
 
 # Tauri / Rust
 src-tauri/target/
+
+# Landing deploy bundle (generated from index.html + assets/)
+deploy/

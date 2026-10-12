@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Shaim is a private, self-hosted LLM manager — a desktop chat app that connects to your own model servers over the LAN. No accounts, no telemetry."
+    />
+    <title>Shaim — self-hosted LLM manager</title>
+    <style>
+      :root {
+        /* CRS-Theme (tweakcn) — dark variant. Primary + ring are 1:1 from the
+           theme export; dark neutrals derived from the theme's gray family. */
+        --background: #0a0a0a;
+        --foreground: #ededed;
+        --card: #1a1a1a;
+        --card-foreground: #ededed;
+        --muted: #1f1f1f;
+        --muted-foreground: #a3a3a3;
+        --border: #262626;
+        --primary: #2bc585;
+        --primary-foreground: #212b27;
+        --ring: #8ee9be;
+
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Subtle green ambience behind the hero, pure CSS — no assets, no JS. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: -20% 0 auto;
+        height: 60vh;
+        background: radial-gradient(
+          ellipse 60% 50% at 50% 0%,
+          color-mix(in srgb, var(--primary) 14%, transparent),
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+
+      main {
+        flex: 1;
+        position: relative;
+        width: 100%;
+        max-width: 56rem;
+        margin: 0 auto;
+        padding: 5rem 1.5rem 4rem;
+      }
+
+      .logo {
+        display: block;
+        width: 96px;
+        height: 96px;
+        border-radius: 1.25rem;
+        border: 1px solid var(--border);
+        box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 8%, transparent);
+        margin-bottom: 1.75rem;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 5vw, 3.25rem);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+        text-wrap: balance;
+        background: linear-gradient(100deg, var(--foreground) 30%, var(--primary));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .tagline {
+        max-width: 44rem;
+        margin-top: 1.25rem;
+        font-size: 1.125rem;
+        color: var(--muted-foreground);
+      }
+
+      .cta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 2rem;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        padding: 0.625rem 1.25rem;
+        border-radius: 0.625rem;
+        border: 1px solid transparent;
+        font-size: 0.9375rem;
+        font-weight: 600;
+        text-decoration: none;
+        transition: filter 150ms ease, border-color 150ms ease;
+      }
+
+      .btn:hover {
+        filter: brightness(1.1);
+      }
+
+      .btn-primary {
+        background: var(--primary);
+        color: var(--primary-foreground);
+      }
+
+      .btn-ghost {
+        border-color: var(--border);
+        color: var(--foreground);
+        background: transparent;
+      }
+
+      .btn-ghost:hover {
+        filter: none;
+        border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+      }
+
+      .btn .arrow {
+        font-size: 0.8em;
+        opacity: 0.75;
+      }
+
+      ul#features {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: 1rem;
+        margin-top: 3rem;
+        padding: 0;
+        list-style: none;
+      }
+
+      ul#features li {
+        padding: 1.5rem 1.5rem 1.75rem;
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        background: var(--card);
+        color: var(--card-foreground);
+        transition: border-color 150ms ease;
+      }
+
+      ul#features li:hover {
+        border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+      }
+
+      ul#features h3 {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      ul#features h3::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background: var(--primary);
+        box-shadow: 0 0 8px var(--primary);
+        flex: none;
+      }
+
+      ul#features p {
+        margin-top: 0.5rem;
+        font-size: 0.9375rem;
+        color: var(--muted-foreground);
+      }
+
+      .alpha-pill {
+        display: inline-block;
+        margin-left: 0.375rem;
+        padding: 0.05rem 0.5rem;
+        border: 1px solid color-mix(in srgb, var(--primary) 60%, transparent);
+        border-radius: 999px;
+        font-size: 0.6875rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ring);
+        vertical-align: middle;
+      }
+
+      footer {
+        padding: 1.75rem 1.5rem;
+        text-align: center;
+        color: var(--muted-foreground);
+        font-size: 0.875rem;
+      }
+
+      footer .brand {
+        color: var(--foreground);
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="assets/shaim-logo.png" alt="Shaim logo" width="96" height="96" />
+      <h1>Shaim — self-hosted LLM manager</h1>
+      <p class="tagline">
+        Your models, your hardware, your data. A desktop chat app that talks to your
+        own model servers over the LAN — no accounts, no telemetry, nothing in the cloud.
+      </p>
+      <div class="cta">
+        <a
+          class="btn btn-primary"
+          href="https://github.com/CrystalPlatforms/CRS-SHAIM"
+          target="_blank"
+          rel="noopener"
+        >GitHub <span class="arrow">↗</span></a>
+        <a
+          class="btn btn-ghost"
+          href="https://crystal-studio.dev"
+          target="_blank"
+          rel="noopener"
+        >Crystal Studio <span class="arrow">↗</span></a>
+      </div>
+      <ul id="features">
+        <li>
+          <h3>Connect anything</h3>
+          <p>Ollama first-class, plus any OpenAI-compatible server on your network.</p>
+        </li>
+        <li>
+          <h3>Rich chat</h3>
+          <p>Streaming answers with markdown, code blocks, and thinking blocks.</p>
+        </li>
+        <li>
+          <h3>Agents in chat<span class="alpha-pill">Alpha</span></h3>
+          <p>Drive Claude Code &amp; Codex straight from the conversation.</p>
+        </li>
+      </ul>
+    </main>
+    <footer>
+      <span class="brand">Shaim</span> — by CrystalPlatforms · Alpha v.0.0.1
+    </footer>
+  </body>
+</html>
