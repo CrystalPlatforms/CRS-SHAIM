@@ -6,7 +6,13 @@ node_modules/
 dist/
 
 # Tauri / Rust
-src-tauri/target/
+**/src-tauri/target/
+
+# Icon pipeline intermediates (regenerable — see app/README.md)
+app/icon-source*.png
 
 # Landing deploy bundle (generated from index.html + assets/)
 deploy/
+
+# Tauri generated capability schemas
+app/src-tauri/gen/schemas/
