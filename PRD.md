@@ -159,8 +159,3 @@ Automated checks live in the Rust core (fast, headless); everything user-facing 
 - **Landing copy (EN):** hero "Shaim — self-hosted LLM manager"; features: connect Ollama & any OpenAI-compatible server, rich chat (code blocks, thinking), agents in chat (Alpha); footer "by CrystalPlatforms".
 - **Free-tier infra:** Cloudflare Pages (landing) is free; if remote access is ever revisited, Cloudflare Tunnel is the known free option.
 - **Language policy:** app UI and this PRD are in English; conversation with the developer is in Polish.
-
----
-✻ Brewed for 9s · done 2:57 PM
-
-──────────────
