@@ -1,8 +1,54 @@
-/** Mirror of the Rust `store::Conversation` — keep both in sync. */
+/** Mirrors of the Rust `store::*` structs — keep both sides in sync. */
+
 export interface Conversation {
   id: number;
   title: string;
+  server_id: number | null;
+  model_id: string | null;
   mode: string;
+  system_prompt: string | null;
+  temperature: number | null;
+  context_len: number | null;
+  thinking: boolean;
   created_at: number;
   updated_at: number;
 }
+
+export type ServerKind = "ollama" | "openai_compatible";
+
+export interface Server {
+  id: number;
+  name: string;
+  kind: ServerKind;
+  base_url: string;
+  api_key: string | null;
+}
+
+export interface ModelInfo {
+  id: string;
+}
+
+export interface Message {
+  id: number;
+  conversation_id: number;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  thinking: string | null;
+  images: string[];
+  reaction: string | null;
+  created_at: number;
+}
+
+export interface AppSettings {
+  default_server_id: number | null;
+  default_model_id: string | null;
+}
+
+/** Events streamed from `send_message` over a Tauri channel. */
+export type ChatStreamEvent =
+  | { type: "user_message"; id: number; content: string; images: string[] }
+  | { type: "thinking"; text: string }
+  | { type: "content"; text: string }
+  | { type: "title_changed"; title: string }
+  | { type: "done"; message_id: number; content: string; thinking: string; aborted: boolean }
+  | { type: "error"; message: string };

@@ -5,12 +5,14 @@ import type { Conversation } from "@/types";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPane } from "@/components/ChatPane";
 import { DetailPane } from "@/components/DetailPane";
+import { SettingsDialog } from "@/components/SettingsDialog";
 
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,6 +68,7 @@ export default function App() {
         onRename={handleRename}
         onDelete={handleDelete}
         onClose={() => setSidebarOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <ChatPane
         conversation={selected}
@@ -73,11 +76,18 @@ export default function App() {
         onOpenSidebar={() => setSidebarOpen(true)}
         detailsOpen={detailsOpen}
         onOpenDetails={() => setDetailsOpen(true)}
+        onConversationsChanged={() => void refresh()}
       />
       <DetailPane
         conversation={selected}
         open={detailsOpen}
         onClose={() => setDetailsOpen(false)}
+        onConversationsChanged={() => void refresh()}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onServersChanged={() => void refresh()}
       />
     </div>
   );

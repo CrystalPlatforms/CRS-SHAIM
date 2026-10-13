@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PanelLeftClose, Pencil, Plus, Trash2 } from "lucide-react";
+import { PanelLeftClose, Pencil, Plus, Settings, Trash2 } from "lucide-react";
 
 import type { Conversation } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ interface SidebarProps {
   onRename: (id: number, title: string) => void;
   onDelete: (id: number) => void;
   onClose: () => void;
+  onOpenSettings: () => void;
 }
 
 /**
@@ -46,6 +47,7 @@ export function Sidebar({
   onRename,
   onDelete,
   onClose,
+  onOpenSettings,
 }: SidebarProps) {
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -101,6 +103,16 @@ export function Sidebar({
               title="New conversation"
             >
               <Plus />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground"
+              onClick={onOpenSettings}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <Settings />
             </Button>
           </div>
         </header>
