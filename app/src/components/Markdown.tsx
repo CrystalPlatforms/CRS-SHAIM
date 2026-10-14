@@ -3,8 +3,33 @@ import { Check, ChevronRight, Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { cn } from "@/lib/utils";
+
+/**
+ * Links never navigate the app's webview — they open in the system
+ * browser. HTTP(S) goes through the opener plugin; other schemes are
+ * ignored rather than handed to the shell.
+ */
+function ExternalLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(event) => {
+        if (!href || !(href.startsWith("http://") || href.startsWith("https://"))) {
+          return;
+        }
+        event.preventDefault();
+        void openUrl(href).catch((error) => console.error("Failed to open link:", error));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 /**
  * Rich message body: GFM markdown (headings, lists, tables, blockquotes,
@@ -20,6 +45,7 @@ export function MarkdownMessage({ content }: { content: string }) {
         rehypePlugins={[rehypeHighlight]}
         components={{
           pre: CodeBlock,
+          a: ExternalLink,
         }}
       >
         {content}

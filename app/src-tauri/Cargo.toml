@@ -32,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", "io-util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.23.1"
+tauri-plugin-opener = "2.5.5"
 
 [profile.release]
 codegen-units = 1
