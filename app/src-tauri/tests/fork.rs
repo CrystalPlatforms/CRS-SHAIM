@@ -100,7 +100,7 @@ fn fork_inherits_settings_and_takes_a_sane_title() {
         .set_conversation_model(conv.id, Some(server.id), Some("llama3:8b"))
         .unwrap();
     store
-        .set_conversation_settings(conv.id, Some("Be terse."), Some(0.5), Some(1024), true)
+        .set_conversation_settings(conv.id, Some("Be terse."), Some(0.5), Some(1024))
         .unwrap();
     store.rename_conversation(conv.id, "Original name").unwrap();
 
@@ -116,7 +116,7 @@ fn fork_inherits_settings_and_takes_a_sane_title() {
     assert_eq!(fork.system_prompt.as_deref(), Some("Be terse."));
     assert_eq!(fork.temperature, Some(0.5));
     assert_eq!(fork.context_len, Some(1024));
-    assert!(fork.thinking);
+    // Reasoning is always on app-wide — nothing per-row to inherit.
 }
 
 #[test]

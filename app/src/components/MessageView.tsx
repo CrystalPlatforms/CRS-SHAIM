@@ -1,7 +1,9 @@
 import { Copy, Pencil, RefreshCw, Reply, Scissors, SmilePlus, Trash2, X } from "lucide-react";
 
 import type { Message } from "@/types";
+import { isReasoningTitle, parseActivity } from "@/types";
 import { MarkdownMessage, ThinkingBlock } from "@/components/Markdown";
+import { ActivityBlock } from "@/components/ActivityBlock";
 import { cn } from "@/lib/utils";
 import {
   ContextMenu,
@@ -119,6 +121,32 @@ export function MessageView({
         </div>
         {reactionChip}
       </div>
+    ) : message.role === "tool" ? (
+      // Agent output between messages: reasoning renders as plain italic
+      // text (no frame), real tool calls as collapsible activity blocks.
+      (() => {
+        const activity = parseActivity(message.content);
+        return (
+          <div
+            data-message-id={message.id}
+            className={cn(
+              "group/message flex w-full justify-start rounded-lg px-1",
+              highlighted && "animate-highlight-pulse"
+            )}
+          >
+            <div className="w-full max-w-[85%] min-w-0">
+              {isReasoningTitle(activity.title) ? (
+                <p className="whitespace-pre-wrap text-xs italic text-muted-foreground">
+                  {activity.detail}
+                </p>
+              ) : (
+                <ActivityBlock {...activity} />
+              )}
+              {controls && <div className="mt-1">{controls}</div>}
+            </div>
+          </div>
+        );
+      })()
     ) : (
       <div
         data-message-id={message.id}
@@ -147,6 +175,10 @@ export function MessageView({
         </div>
       </div>
     );
+
+  // Activity blocks copy their readable detail; other messages copy verbatim.
+  const copyText =
+    message.role === "tool" ? parseActivity(message.content).detail : message.content;
 
   return (
     <ContextMenu>
@@ -192,7 +224,7 @@ export function MessageView({
           </ContextMenuItem>
         )}
         <ContextMenuItem
-          onSelect={() => void navigator.clipboard.writeText(message.content)}
+          onSelect={() => void navigator.clipboard.writeText(copyText)}
         >
           <Copy className="mr-2 h-4 w-4" />
           Copy

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   ImagePlus,
   PanelLeftOpen,
@@ -13,7 +14,17 @@ import {
   X,
 } from "lucide-react";
 
-import type { ChatStreamEvent, Conversation, Message } from "@/types";
+import type {
+  AgentKind,
+  ChatStreamEvent,
+  Conversation,
+  Message,
+  ModelInfo,
+  Server,
+  SkillInfo,
+  StreamSegment,
+} from "@/types";
+import { AGENT_COMMANDS, isReasoningTitle } from "@/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,6 +36,8 @@ import {
 } from "@/components/ui/dialog";
 import { MessageView, PendingImages } from "@/components/MessageView";
 import { AgentLoader } from "@/components/AgentLoader";
+import { ActivityBlock } from "@/components/ActivityBlock";
+import { cn } from "@/lib/utils";
 
 interface ChatPaneProps {
   conversation: Conversation | null;
@@ -76,9 +89,11 @@ function ShowDetailsButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** An in-flight stream: natural-mode thinking plus the ordered pieces
+ * (assistant text, activity blocks) both modes produce. */
 interface StreamState {
-  content: string;
   thinking: string;
+  segments: StreamSegment[];
 }
 
 /** A message being edited: sending continues the conversation from it. */
@@ -112,6 +127,22 @@ interface AskButton {
   text: string;
 }
 
+/** One row of the composer suggestion palette. */
+interface SuggestionItem {
+  label: string;
+  hint?: string;
+  insert: string;
+}
+
+/** Open palette state: what kind, the trigger token length (the query plus
+ * the "/" or "@" that started it) and the rows. */
+interface SuggestionState {
+  kind: "command" | "file";
+  tokenLength: number;
+  items: SuggestionItem[];
+  selected: number;
+}
+
 /** Snippet for the reply chip: the first non-empty line, char-safe cut. */
 function snippetOf(content: string): string {
   const MAX = 64;
@@ -130,6 +161,25 @@ function wordsSnippet(content: string, maxWords = 5): string {
   const words = content.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) return words.join(" ");
   return `${words.slice(0, maxWords).join(" ")}…`;
+}
+
+/** Compact folder label for the toolbar: the parent plus the active
+ * folder ("../LOGOs/Metredon"); anything longer collapses to "…". */
+function folderLabel(path: string | null): string {
+  if (!path) return "Choose folder…";
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length <= 2) return path;
+  const short = `../${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
+  return short.length > 26 ? `…${short.slice(-25)}` : short;
+}
+
+/** The most recent activity segment — where appends and closes land. */
+function lastActivity(segments: StreamSegment[]): Extract<StreamSegment, { kind: "activity" }> | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
+    if (segment.kind === "activity") return segment;
+  }
+  return null;
 }
 
 /** Markdown blockquote of an arbitrary text (full message or selection). */
@@ -268,6 +318,37 @@ function placeCaretAfterChip(chip: Element) {
   sel.addRange(range);
 }
 
+/** One half of the Natural/Agent mode selector. Shared with the Details
+ * panel, which offers the same switch. */
+export function ModePill({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      className={cn(
+        "rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:opacity-50",
+        active
+          ? "border-primary bg-primary/10 text-foreground"
+          : "border-border text-muted-foreground hover:bg-muted/40"
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 /**
  * Deltas arrive faster than React should re-render; they accumulate in a ref
  * and flush into state on a timer, so typing never competes with the stream.
@@ -300,9 +381,42 @@ export function ChatPane({
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  /** Slash-command / @-file palette above the composer (Agent mode). */
+  const [suggestions, setSuggestions] = useState<SuggestionState | null>(null);
+  /** Which composer toolbar popover is open. */
+  const [composerPopup, setComposerPopup] = useState<
+    "brain" | "model" | "folder" | null
+  >(null);
+  /** Skills installed for the conversation's CLI brain. */
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
 
   const generationRef = useRef<number | null>(null);
-  const bufferRef = useRef<StreamState>({ content: "", thinking: "" });
+  /** Guards stale '@' file queries — only the newest detection wins. */
+  const suggestionRequestIdRef = useRef(0);
+
+  const isCliBrain = conversation?.agent_kind != null;
+
+  // Skills of the current brain — the "/" palette merges them in, "$"
+  // shows them alone.
+  useEffect(() => {
+    const kind = conversation?.agent_kind;
+    if (!kind) {
+      setSkills([]);
+      return;
+    }
+    let cancelled = false;
+    invoke<SkillInfo[]>("list_agent_skills", { agentKind: kind })
+      .then((loaded) => {
+        if (!cancelled) setSkills(loaded);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation?.id, conversation?.agent_kind]);
+  const bufferRef = useRef<StreamState>({ thinking: "", segments: [] });
   const streamingRef = useRef(false);
   /** The composer is a contentEditable — plain text + inline ask chips. */
   const composerRef = useRef<HTMLDivElement>(null);
@@ -420,6 +534,7 @@ export function ChatPane({
     setAsks([]);
     setAskButton(null);
     setDeleting(null);
+    setSuggestions(null);
     if (!conversation) return;
 
     let cancelled = false;
@@ -435,7 +550,10 @@ export function ChatPane({
 
   const flushBuffer = useCallback(() => {
     if (!streamingRef.current) return;
-    setStream({ ...bufferRef.current });
+    setStream({
+      thinking: bufferRef.current.thinking,
+      segments: [...bufferRef.current.segments],
+    });
   }, []);
 
   const reloadMessages = useCallback(async (conversationId: number) => {
@@ -456,17 +574,18 @@ export function ChatPane({
   }, []);
 
   /**
-   * Runs one chat command (send_message / regenerate / edit_message) and
-   * drives its stream. All three converge on "history as stored → one
-   * streamed assistant message appended", so they share this single path.
+   * Runs one chat/agent command (send_message / send_agent_message /
+   * regenerate / edit_message) and drives its stream. Natural mode converges
+   * on "history as stored → one streamed assistant message appended"; agent
+   * mode streams many segments and finishes with a full history push.
    */
   const runCommand = useCallback(
     (conversationId: number, command: string, args: Record<string, unknown>) => {
       if (streamingRef.current) return;
       setError(null);
-      bufferRef.current = { content: "", thinking: "" };
+      bufferRef.current = { thinking: "", segments: [] };
       streamingRef.current = true;
-      setStream({ content: "", thinking: "" });
+      setStream({ thinking: "", segments: [] });
       // Sending always means "show me the latest" — even if the user had
       // scrolled up, ride down to the new message.
       stickToBottomRef.current = true;
@@ -492,7 +611,7 @@ export function ChatPane({
             break;
           case "history":
             // The store rewrote the path (edit truncation, regenerate
-            // removal) — mirror the canonical history wholesale.
+            // removal, agent persistence) — mirror the canonical history.
             setMessages(event.messages);
             break;
           case "started":
@@ -503,9 +622,41 @@ export function ChatPane({
           case "thinking":
             bufferRef.current.thinking += event.text;
             break;
-          case "content":
-            bufferRef.current.content += event.text;
+          case "content": {
+            // Natural mode appends to the streamed text; agent mode opens a
+            // new text piece after each activity block.
+            const segments = bufferRef.current.segments;
+            const last = segments[segments.length - 1];
+            if (last?.kind === "text") {
+              last.text += event.text;
+            } else {
+              segments.push({ kind: "text", text: event.text });
+            }
             break;
+          }
+          case "activity_start":
+            bufferRef.current.segments.push({
+              kind: "activity",
+              title: event.title,
+              detail: "",
+              open: true,
+            });
+            break;
+          case "activity_append": {
+            const target = lastActivity(bufferRef.current.segments);
+            if (target) target.detail += event.detail;
+            break;
+          }
+          case "activity_retitle": {
+            const target = lastActivity(bufferRef.current.segments);
+            if (target) target.title = event.title;
+            break;
+          }
+          case "activity_end": {
+            const target = lastActivity(bufferRef.current.segments);
+            if (target) target.open = false;
+            break;
+          }
           case "title_changed":
             onConversationsChanged();
             break;
@@ -529,6 +680,14 @@ export function ChatPane({
             if (event.aborted) onConversationsChanged();
             break;
           }
+          case "agent_done":
+            // The persisted segments already arrived as a history push.
+            streamingRef.current = false;
+            generationRef.current = null;
+            setStream(null);
+            if (event.error) setError(event.error);
+            onConversationsChanged();
+            break;
           case "error":
             streamingRef.current = false;
             generationRef.current = null;
@@ -562,6 +721,134 @@ export function ChatPane({
       .forEach((chip) => chip.remove());
     setAsks([]);
   }, []);
+
+  /** Typed text between the composer start and the caret. */
+  const textBeforeCaret = useCallback((): string => {
+    const el = composerRef.current;
+    const sel = window.getSelection();
+    if (!el || !sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
+      return "";
+    }
+    const pre = document.createRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
+    return pre.toString();
+  }, []);
+
+  /** Opens the "/" command or "@" file palette from the token under the
+   * caret; Agent mode only. Files resolve from the project folder with a
+   * short debounce — the newest query always wins. */
+  const detectSuggestion = useCallback(() => {
+    if (!conversation || conversation.agent_kind == null) {
+      setSuggestions(null);
+      return;
+    }
+    const before = textBeforeCaret();
+    const match = /(^|\s)([/@$])([^\s]*)$/.exec(before);
+    if (!match) {
+      setSuggestions(null);
+      return;
+    }
+    const query = match[3].toLowerCase();
+    const tokenLength = match[3].length + 1;
+    const contains = (haystack: string) => haystack.toLowerCase().includes(query);
+    if (match[2] === "@") {
+      // Files of the project folder — Agent mode only.
+      if (conversation.mode !== "agent" || !conversation.project_path) {
+        setSuggestions(null);
+        return;
+      }
+      const requestId = ++suggestionRequestIdRef.current;
+      setSuggestions({ kind: "file", tokenLength, items: [], selected: 0 });
+      window.setTimeout(() => {
+        invoke<string[]>("list_project_files", {
+          conversationId: conversation.id,
+          query,
+          limit: 20,
+        })
+          .then((files) => {
+            if (suggestionRequestIdRef.current !== requestId) return;
+            setSuggestions(
+              files.length > 0
+                ? {
+                    kind: "file",
+                    tokenLength,
+                    items: files.map((file) => ({
+                      label: `@${file}`,
+                      hint: "mention this file",
+                      insert: `@${file} `,
+                    })),
+                    selected: 0,
+                  }
+                : null,
+            );
+          })
+          .catch(() => setSuggestions(null));
+      }, 150);
+      return;
+    }
+    // "/" offers the CLI's built-ins plus installed skills; "$" is skills
+    // alone — both insert the command text for the CLI to run.
+    const commandRows = (
+      match[2] === "/" ? AGENT_COMMANDS[conversation.agent_kind] : []
+    )
+      .filter((entry) => query.length === 0 || contains(entry.cmd) || contains(entry.hint))
+      .map((entry) => ({
+        label: entry.cmd,
+        hint: entry.hint,
+        insert: `${entry.cmd} `,
+      }));
+    const skillRows = skills
+      .filter((skill) => query.length === 0 || contains(skill.name) || contains(skill.description))
+      .map((skill) => ({
+        label: `/${skill.name}`,
+        hint: skill.description,
+        insert: `/${skill.name} `,
+      }));
+    const items = [...commandRows, ...skillRows];
+    setSuggestions(
+      items.length > 0
+        ? { kind: "command", tokenLength, items, selected: 0 }
+        : null,
+    );
+  }, [conversation, skills, textBeforeCaret]);
+
+  /** Replaces the trigger token with the picked row and parks the caret
+   * after the inserted text. */
+  const applySuggestion = useCallback(
+    (state: SuggestionState, item: SuggestionItem) => {
+      const el = composerRef.current;
+      const sel = window.getSelection();
+      if (!el || !sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
+        setSuggestions(null);
+        return;
+      }
+      const modifiable = sel as Selection & {
+        modify?: (
+          alteration: string,
+          direction: string,
+          granularity: string,
+        ) => void;
+      };
+      if (modifiable.modify) {
+        for (let i = 0; i < state.tokenLength; i++) {
+          modifiable.modify("extend", "backward", "character");
+        }
+      }
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const inserted = document.createTextNode(item.insert);
+      range.insertNode(inserted);
+      range.setStartAfter(inserted);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      setDraft(composerText(el));
+      setSuggestions(null);
+      el.focus();
+    },
+    [],
+  );
 
   /**
    * Pointer-driven chip dragging — HTML5 drag&drop never fires a usable
@@ -671,6 +958,7 @@ export function ChatPane({
 
   const send = useCallback(() => {
     if (!conversation) return;
+    if (conversation.mode === "agent" && !conversation.project_path) return;
     const text = draft.trim();
     if (text.length === 0 && pendingImages.length === 0) return;
 
@@ -689,12 +977,55 @@ export function ChatPane({
     setPendingImages([]);
     clearAsks();
     setReplying(null);
+    setSuggestions(null);
     if (composerRef.current) composerRef.current.textContent = "";
-    runCommand(conversation.id, "send_message", {
-      content: sentText,
-      images: sentImages,
-    });
+    // Route by brain: server models in Natural chat through the gateway;
+    // CLI brains and Agent mode (any brain) go through the agent pipeline.
+    if (conversation.mode === "agent" || conversation.agent_kind != null) {
+      runCommand(conversation.id, "send_agent_message", {
+        content: sentText,
+        images: sentImages,
+      });
+    } else {
+      runCommand(conversation.id, "send_message", {
+        content: sentText,
+        images: sentImages,
+      });
+    }
   }, [conversation, draft, pendingImages, asks, replying, clearAsks, runCommand]);
+
+  /** Composer toolbar: Natural ↔ Agent, immediately — the folder, if
+   * missing, is picked right where the folder button is. */
+  const toggleMode = useCallback(async () => {
+    if (!conversation) return;
+    try {
+      await invoke("set_conversation_mode", {
+        id: conversation.id,
+        mode: conversation.mode === "agent" ? "natural" : "agent",
+      });
+      onConversationsChanged();
+    } catch (err) {
+      console.error("Failed to switch mode:", err);
+    }
+  }, [conversation, onConversationsChanged]);
+
+  /** Composer toolbar: repoints the project folder via the native picker. */
+  const changeFolder = useCallback(async () => {
+    if (!conversation) return;
+    setComposerPopup(null);
+    try {
+      const picked = await open({ directory: true, multiple: false });
+      if (typeof picked !== "string" || picked.length === 0) return;
+      await invoke("set_conversation_agent", {
+        id: conversation.id,
+        agentKind: conversation.agent_kind,
+        projectPath: picked,
+      });
+      onConversationsChanged();
+    } catch (err) {
+      console.error("Failed to change folder:", err);
+    }
+  }, [conversation, onConversationsChanged]);
 
   const startEdit = useCallback((message: Message) => {
     const el = composerRef.current;
@@ -857,7 +1188,34 @@ export function ChatPane({
     return () => window.clearTimeout(timer);
   }, [jumpTarget, messages, conversation, onJumpHandled]);
 
-  const attachImages = async (files: FileList | null) => {
+  /** Agent pipeline, file picker: the picked files' REAL paths join the
+   * message — no copies, the agent opens exactly those files. */
+  const browseImages = async () => {
+    try {
+      const picked = await open({
+        multiple: true,
+        filters: [
+          {
+            name: "Images",
+            extensions: ["png", "jpg", "jpeg", "webp", "gif"],
+          },
+        ],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      composerRef.current?.focus();
+      for (const path of paths) {
+        document.execCommand("insertText", false, `${path}\n`);
+      }
+      if (composerRef.current) setDraft(composerText(composerRef.current));
+    } catch (err) {
+      console.error("Failed to open image picker:", err);
+    }
+  };
+
+  /** Paste: screenshots have no file, so one is saved and its path
+   * inserted for agent brains; server chat keeps inline previews. */
+  const attachImages = async (files: FileList | File[] | null) => {
     if (!files) return;
     const readers = Array.from(files).map(
       (file) =>
@@ -870,7 +1228,22 @@ export function ChatPane({
     );
     try {
       const dataUrls = await Promise.all(readers);
-      setPendingImages((current) => [...current, ...dataUrls]);
+      const agentPipeline =
+        conversation && (conversation.mode === "agent" || conversation.agent_kind != null);
+      if (agentPipeline) {
+        composerRef.current?.focus();
+        for (const dataUrl of dataUrls) {
+          try {
+            const path = await invoke<string>("save_attachment", { dataUrl });
+            document.execCommand("insertText", false, `${path}\n`);
+          } catch (err) {
+            console.error("Failed to save attachment:", err);
+          }
+        }
+        if (composerRef.current) setDraft(composerText(composerRef.current));
+      } else {
+        setPendingImages((current) => [...current, ...dataUrls]);
+      }
     } catch (err) {
       console.error("Failed to read image files:", err);
     }
@@ -897,6 +1270,7 @@ export function ChatPane({
   }
 
   const isStreaming = stream !== null;
+  const isAgent = conversation.mode === "agent";
   const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
 
   return (
@@ -958,16 +1332,32 @@ export function ChatPane({
                 message={message}
                 highlighted={message.id === highlightId}
                 showRegenerate={
+                  !isAgent &&
+                  !isCliBrain &&
                   !isStreaming &&
                   message.role === "assistant" &&
                   message.id === lastMessageId
                 }
                 onRegenerate={regenerate}
-                onEdit={message.role === "user" ? () => startEdit(message) : undefined}
-                onReact={(emoji) => void react(message.id, emoji)}
-                onReply={() => replyTo(message)}
+                onEdit={
+                  !isAgent && !isCliBrain && message.role === "user"
+                    ? () => startEdit(message)
+                    : undefined
+                }
+                onReact={
+                  message.role === "tool"
+                    ? undefined
+                    : (emoji) => void react(message.id, emoji)
+                }
+                onReply={
+                  message.role === "tool" ? undefined : () => replyTo(message)
+                }
                 onDelete={() => setDeleting(message)}
-                onFork={() => void forkFrom(message)}
+                onFork={
+                  message.role === "tool"
+                    ? undefined
+                    : () => void forkFrom(message)
+                }
               />
             ))}
             {isStreaming && <StreamingMessage stream={stream} />}
@@ -976,7 +1366,7 @@ export function ChatPane({
                 <span className="min-w-0 flex-1 text-xs text-destructive">
                   {error}
                 </span>
-                {!isStreaming && (
+                {!isStreaming && !isAgent && !isCliBrain && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -1053,26 +1443,70 @@ export function ChatPane({
           </div>
         )}
         <div className="flex items-end gap-2">
-          {!editing && (
-            <label
-              className="flex h-[38px] w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground"
-              title="Attach images"
-            >
-              <ImagePlus className="h-5 w-5" />
-              <span className="sr-only">Attach images</span>
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  void attachImages(event.target.files);
-                  event.target.value = "";
-                }}
-              />
-            </label>
-          )}
-          <div className="min-w-0 flex-1 rounded-lg border border-border bg-card">
+          {!editing &&
+            (isAgent || isCliBrain ? (
+              <button
+                type="button"
+                onClick={() => void browseImages()}
+                className="flex h-[38px] w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground"
+                title="Attach images"
+              >
+                <ImagePlus className="h-5 w-5" />
+                <span className="sr-only">Attach images</span>
+              </button>
+            ) : (
+              <label
+                className="flex h-[38px] w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground"
+                title="Attach images"
+              >
+                <ImagePlus className="h-5 w-5" />
+                <span className="sr-only">Attach images</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void attachImages(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            ))}
+          <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card">
+            {/* Slash-command / @-file palette (Agent mode) */}
+            {suggestions && suggestions.items.length > 0 && (
+              <div className="absolute bottom-full left-0 z-50 mb-1 max-h-52 w-full min-w-[280px] overflow-y-auto rounded-lg border border-border bg-popover shadow-md">
+                {suggestions.items.map((item, index) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    // Keep the caret in the composer for the insert.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applySuggestion(suggestions, item);
+                    }}
+                    onMouseEnter={() =>
+                      setSuggestions({ ...suggestions, selected: index })
+                    }
+                    className={cn(
+                      "flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-xs",
+                      index === suggestions.selected && "bg-accent"
+                    )}
+                  >
+                    <span className="shrink-0 font-medium">{item.label}</span>
+                    {item.hint && (
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        {item.hint}
+                      </span>
+                    )}
+                  </button>
+                ))}
+                <div className="border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
+                  ↑↓ browse · Enter/Tab insert · Esc close
+                </div>
+              </div>
+            )}
             {!editing && (
               <PendingImages
                 images={pendingImages}
@@ -1083,10 +1517,14 @@ export function ChatPane({
                 }
               />
             )}
-            <div className="relative flex items-end gap-1 px-2 py-1">
+            <div className="relative px-2 pt-1">
               {draft.length === 0 && asks.length === 0 && (
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                  {editing ? "Edit your message…" : "Write a message…"}
+                <span className="pointer-events-none absolute left-3 top-3 text-sm text-muted-foreground">
+                  {editing
+                    ? "Edit your message…"
+                    : isAgent
+                      ? "Describe the task for the agent…"
+                      : "Write a message…"}
                 </span>
               )}
               <div
@@ -1095,7 +1533,10 @@ export function ChatPane({
                 role="textbox"
                 aria-multiline="true"
                 aria-label={editing ? "Edit message" : "Message"}
-                onInput={syncComposer}
+                onInput={() => {
+                  syncComposer();
+                  detectSuggestion();
+                }}
                 onPointerDown={(event) => {
                   // Grabbing a chip starts the pointer drag; preventDefault
                   // keeps the editable from also starting a text selection.
@@ -1125,6 +1566,42 @@ export function ChatPane({
                   });
                 }}
                 onKeyDown={(event) => {
+                  // The suggestion palette eats navigation keys first.
+                  if (suggestions && suggestions.items.length > 0) {
+                    const count = suggestions.items.length;
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setSuggestions({
+                        ...suggestions,
+                        selected: (suggestions.selected + 1) % count,
+                      });
+                      return;
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setSuggestions({
+                        ...suggestions,
+                        selected: (suggestions.selected - 1 + count) % count,
+                      });
+                      return;
+                    }
+                    if (
+                      event.key === "Tab" ||
+                      (event.key === "Enter" && !event.nativeEvent.isComposing)
+                    ) {
+                      event.preventDefault();
+                      applySuggestion(
+                        suggestions,
+                        suggestions.items[suggestions.selected],
+                      );
+                      return;
+                    }
+                    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      setSuggestions(null);
+                      return;
+                    }
+                  }
                   // Enter sends; Shift+Enter inserts a newline; Escape
                   // leaves edit / reply mode and drops the ask chips.
                   if (
@@ -1161,6 +1638,16 @@ export function ChatPane({
                   }
                 }}
                 onPaste={(event) => {
+                  // Pasted screenshots become attachments: their PATH lands
+                  // in the message for agent brains, previews for chat.
+                  const imageFiles = Array.from(event.clipboardData.files).filter(
+                    (file) => file.type.startsWith("image/"),
+                  );
+                  if (imageFiles.length > 0) {
+                    event.preventDefault();
+                    void attachImages(imageFiles);
+                    return;
+                  }
                   // Plain text only — the composer must not turn into a
                   // rich-text document.
                   event.preventDefault();
@@ -1169,31 +1656,119 @@ export function ChatPane({
                     document.execCommand("insertText", false, text);
                   }
                 }}
-                className="max-h-40 min-h-7 w-full min-w-0 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-sm outline-none"
+                className="max-h-40 min-h-[60px] w-full min-w-0 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-sm outline-none"
               />
-              {isStreaming ? (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => void stop()}
-                  aria-label="Stop generating"
-                  title="Stop generating"
-                  className="text-destructive"
-                >
-                  <Square />
-                </Button>
-              ) : (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => (editing ? submitEdit() : send())}
-                  disabled={draft.trim().length === 0 && pendingImages.length === 0}
-                  aria-label={editing ? "Save edit" : "Send"}
-                  title={editing ? "Save edit (Enter)" : "Send (Enter)"}
-                >
-                  {editing ? <Pencil /> : <SendHorizontal />}
-                </Button>
+            </div>
+
+            {/* Composer toolbar: brain, model, project folder — left side;
+                send lives on the right. */}
+            <div className="relative flex items-center gap-1 border-t border-border/60 px-2 py-1">
+              {composerPopup && (
+                <div
+                  className="fixed inset-0 z-40"
+                  onMouseDown={() => setComposerPopup(null)}
+                />
               )}
+              {composerPopup === "model" && (
+                <ModelPopup
+                  conversation={conversation}
+                  onClose={() => setComposerPopup(null)}
+                  onChanged={onConversationsChanged}
+                />
+              )}
+              {composerPopup === "folder" && (
+                <div className="absolute bottom-full left-0 z-50 mb-1 w-72 rounded-lg border border-border bg-popover p-2.5 shadow-md">
+                  <div className="text-muted-foreground">Project folder</div>
+                  <div className="mt-1 break-all font-mono text-[11px] text-foreground">
+                    {conversation.project_path ?? "—"}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="mt-2 h-7 px-2 text-xs"
+                    onClick={() => void changeFolder()}
+                  >
+                    Change…
+                  </Button>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={isStreaming}
+                onClick={() => void toggleMode()}
+                title="Mode — Natural chats, Agent works in the project folder"
+                className={cn(
+                  "flex items-center rounded-md px-1.5 py-1 text-xs font-medium disabled:opacity-50",
+                  isAgent
+                    ? "text-yellow-500 hover:bg-yellow-500/10"
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                {isAgent ? "Agent" : "Natural"}
+              </button>
+              <button
+                type="button"
+                disabled={isStreaming}
+                onClick={() =>
+                  setComposerPopup(composerPopup === "model" ? null : "model")
+                }
+                title="Model"
+                className="flex items-center rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+              >
+                Model
+              </button>
+              {conversation.mode === "agent" && (
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() =>
+                    conversation.project_path
+                      ? setComposerPopup(
+                          composerPopup === "folder" ? null : "folder",
+                        )
+                      : void changeFolder()
+                  }
+                  title="Project folder"
+                  className={cn(
+                    "flex min-w-0 max-w-[190px] items-center rounded-md px-1.5 py-1 text-xs hover:bg-muted/50 disabled:opacity-50",
+                    conversation.project_path
+                      ? "text-muted-foreground"
+                      : "text-foreground"
+                  )}
+                >
+                  <span className="truncate">
+                    {folderLabel(conversation.project_path)}
+                  </span>
+                </button>
+              )}
+              <div className="ml-auto">
+                {isStreaming ? (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => void stop()}
+                    aria-label="Stop generating"
+                    title="Stop generating"
+                    className="text-destructive"
+                  >
+                    <Square />
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => (editing ? submitEdit() : send())}
+                    disabled={
+                      (isAgent && !conversation.project_path) ||
+                      (draft.trim().length === 0 && pendingImages.length === 0)
+                    }
+                    aria-label={editing ? "Save edit" : "Send"}
+                    title={editing ? "Save edit (Enter)" : "Send (Enter)"}
+                  >
+                    {editing ? <Pencil /> : <SendHorizontal />}
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1254,18 +1829,201 @@ export function ChatPane({
   );
 }
 
-/** The in-flight assistant message: plain streaming text, no chrome — the
- * orbit loader lives pinned above the composer. */
+/** The composer "Model" popover: pick the provider — a CLI agent or one of
+ * the configured servers — then the model that provider should run. */
+function ModelPopup({
+  conversation,
+  onClose,
+  onChanged,
+}: {
+  conversation: Conversation;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [servers, setServers] = useState<Server[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    invoke<Server[]>("list_servers")
+      .then(setServers)
+      .catch((error) => console.error("Failed to load servers:", error));
+  }, []);
+
+  const isCliBrain = conversation.agent_kind != null;
+  const activeServerId = conversation.server_id ?? servers[0]?.id ?? null;
+
+  // Models of the active provider: servers expose their own lists; the CLI
+  // brains report their documented aliases plus the configured pick.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const load = isCliBrain
+      ? invoke<string[]>("list_cli_models", {
+          agentKind: conversation.agent_kind,
+        })
+      : activeServerId !== null
+        ? invoke<ModelInfo[]>("list_server_models", { id: activeServerId }).then(
+            (loaded) => loaded.map((model) => model.id),
+          )
+        : Promise.resolve([] as string[]);
+    load
+      .then((loaded) => {
+        if (!cancelled) setModels(loaded);
+      })
+      .catch((error) => {
+        console.error("Failed to load models:", error);
+        if (!cancelled) setModels([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCliBrain, conversation.agent_kind, activeServerId]);
+
+  const pickProvider = async (provider: { kind: "server" | AgentKind; serverId?: number }) => {
+    try {
+      if (provider.kind === "server") {
+        await invoke("set_conversation_brain", { id: conversation.id, agentKind: null });
+        await invoke("set_conversation_model", {
+          id: conversation.id,
+          serverId: provider.serverId ?? null,
+          modelId: null,
+        });
+      } else {
+        await invoke("set_conversation_brain", {
+          id: conversation.id,
+          agentKind: provider.kind,
+        });
+      }
+      onChanged();
+    } catch (error) {
+      console.error("Failed to switch provider:", error);
+    }
+  };
+
+  const pickModel = async (model: string) => {
+    try {
+      await invoke("set_conversation_model", {
+        id: conversation.id,
+        serverId: conversation.server_id,
+        modelId: model === "default" ? null : model,
+      });
+      onChanged();
+      onClose();
+    } catch (error) {
+      console.error("Failed to set model:", error);
+    }
+  };
+
+  const providers: {
+    key: string;
+    label: string;
+    kind: "server" | AgentKind;
+    serverId?: number;
+    active: boolean;
+  }[] = [
+    { key: "claude_code", label: "Claude Code", kind: "claude_code", active: conversation.agent_kind === "claude_code" },
+    { key: "codex", label: "Codex", kind: "codex", active: conversation.agent_kind === "codex" },
+    ...servers.map((server) => ({
+      key: `server-${server.id}`,
+      label: server.name,
+      kind: "server" as const,
+      serverId: server.id,
+      active:
+        conversation.agent_kind == null &&
+        (conversation.server_id === server.id ||
+          (conversation.server_id === null && servers[0]?.id === server.id)),
+    })),
+  ];
+
+  const currentModel = conversation.model_id ?? "default";
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onMouseDown={onClose} />
+      <div className="absolute bottom-full left-0 z-50 mb-1 max-h-72 w-72 overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-md">
+        <div className="px-1 text-muted-foreground">Provider</div>
+        <div className="mt-1 space-y-0.5">
+          {providers.map((provider) => (
+            <button
+              key={provider.key}
+              type="button"
+              onClick={() => void pickProvider(provider)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+                provider.active ? "bg-accent" : "hover:bg-muted/50"
+              )}
+            >
+              {provider.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-2 border-t border-border/60 px-1 pt-2 text-muted-foreground">
+          Model
+        </div>
+        <div className="mt-1 space-y-0.5">
+          {loading && (
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">Loading models…</div>
+          )}
+          {!loading && models.length === 0 && (
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">No models found</div>
+          )}
+          {!loading &&
+            models.map((model) => (
+              <button
+                key={model}
+                type="button"
+                onClick={() => void pickModel(model)}
+                className={cn(
+                  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs",
+                  currentModel === model ? "bg-accent" : "hover:bg-muted/50"
+                )}
+              >
+                {model}
+              </button>
+            ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** The in-flight stream: plain streaming text pieces and live activity
+ * blocks, no chrome — the orbit loader lives pinned above the composer. */
 function StreamingMessage({ stream }: { stream: StreamState }) {
   return (
     <div className="flex w-full justify-start px-1">
-      <div className="max-w-[85%] min-w-0">
+      <div className="w-full max-w-[85%] min-w-0 space-y-2">
         {stream.thinking.length > 0 && (
           <p className="mb-1 whitespace-pre-wrap text-xs italic text-muted-foreground">
             {stream.thinking}
           </p>
         )}
-        <p className="whitespace-pre-wrap text-sm">{stream.content}</p>
+        {stream.segments.map((segment, index) =>
+          segment.kind === "text" ? (
+            <p key={index} className="whitespace-pre-wrap text-sm">
+              {segment.text}
+            </p>
+          ) : isReasoningTitle(segment.title) ? (
+            <p
+              key={index}
+              className="whitespace-pre-wrap text-xs italic text-muted-foreground"
+            >
+              {segment.detail}
+            </p>
+          ) : (
+            <ActivityBlock
+              key={`${index}-${segment.open}`}
+              title={segment.title}
+              detail={segment.detail}
+              defaultOpen={segment.open}
+            />
+          ),
+        )}
       </div>
     </div>
   );

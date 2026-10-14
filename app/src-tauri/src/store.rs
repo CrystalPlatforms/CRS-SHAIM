@@ -46,8 +46,39 @@ impl ServerKind {
     }
 }
 
+/// Which headless coding agent an Agent conversation runs. The enum is
+/// designed to grow (Brainstorm/Unrestricted modes come post-Alpha); stored
+/// as `TEXT` on the conversation, next to its project folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentKind {
+    ClaudeCode,
+    Codex,
+}
+
+impl AgentKind {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "claude_code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            other => Err(StoreError::UnknownKind(other.to_string())),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// Every agent offered in the UI, in display order.
+    pub const ALL: [AgentKind; 2] = [AgentKind::ClaudeCode, AgentKind::Codex];
+}
+
 /// A conversation as surfaced to the UI. `server_id`/`model_id` may be unset,
-/// in which case chat falls back to the Settings defaults.
+/// in which case chat falls back to the Settings defaults. Agent conversations
+/// carry `agent_kind` + `project_path` instead of a model pin.
 #[derive(Debug, Clone, Serialize)]
 pub struct Conversation {
     pub id: i64,
@@ -55,6 +86,8 @@ pub struct Conversation {
     pub server_id: Option<i64>,
     pub model_id: Option<String>,
     pub mode: String,
+    pub agent_kind: Option<String>,
+    pub project_path: Option<String>,
     pub system_prompt: Option<String>,
     pub temperature: Option<f64>,
     pub context_len: Option<i64>,
@@ -109,7 +142,7 @@ pub struct SearchHit {
 
 /// Column lists shared by RETURNING/SELECT so every read maps in one order.
 const CONVERSATION_COLUMNS: &str =
-    "id, title, server_id, model_id, mode, system_prompt, temperature, context_len, thinking, created_at, updated_at";
+    "id, title, server_id, model_id, mode, agent_kind, project_path, system_prompt, temperature, context_len, thinking, created_at, updated_at";
 const MESSAGE_COLUMNS: &str =
     "id, conversation_id, role, content, thinking, images, reaction, created_at";
 
@@ -129,6 +162,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     server_id     INTEGER REFERENCES servers(id) ON DELETE SET NULL,
     model_id      TEXT,
     mode          TEXT NOT NULL DEFAULT 'natural' CHECK (mode IN ('natural', 'agent')),
+    agent_kind    TEXT CHECK (agent_kind IN ('claude_code', 'codex')),
+    project_path  TEXT,
     system_prompt TEXT,
     temperature   REAL,
     context_len   INTEGER,
@@ -208,6 +243,26 @@ impl Store {
     /// migrate in place on reopen.
     fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(SCHEMA)?;
+        // Column additions are guarded by pragma checks so older database
+        // files migrate in place on reopen.
+        let conversation_columns: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('conversations')")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if !conversation_columns.iter().any(|name| name == "agent_kind") {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN agent_kind TEXT
+                 CHECK (agent_kind IN ('claude_code', 'codex'))",
+                [],
+            )?;
+        }
+        if !conversation_columns.iter().any(|name| name == "project_path") {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN project_path TEXT",
+                [],
+            )?;
+        }
         let has_system_prompt: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('settings')
              WHERE name = 'default_system_prompt'",
@@ -315,22 +370,78 @@ impl Store {
         Ok(())
     }
 
+    /// Switches the conversation between `natural` (chat) and `agent` (a
+    /// headless coding agent). Unknown modes are rejected before SQL.
+    pub fn set_conversation_mode(&self, id: i64, mode: &str) -> Result<()> {
+        if mode != "natural" && mode != "agent" {
+            return Err(StoreError::UnknownKind(mode.to_string()));
+        }
+        let changed = self.conn.execute(
+            "UPDATE conversations SET mode = ?1 WHERE id = ?2",
+            rusqlite::params![mode, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Configures an Agent conversation in one write: which agent runs and in
+    /// which project folder. Also flips the mode to `agent` — an agent pick
+    /// without the mode is a state the UI never creates. `agent_kind = None`
+    /// means the brain is a server model (the conversation's model pin).
+    pub fn set_conversation_agent(
+        &self,
+        id: i64,
+        agent_kind: Option<AgentKind>,
+        project_path: &str,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE conversations
+             SET agent_kind = ?1, project_path = ?2, mode = 'agent'
+             WHERE id = ?3",
+            rusqlite::params![
+                agent_kind.map(|kind| kind.as_str()),
+                project_path,
+                id
+            ],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Switches the conversation's brain between a server model (`None`) and
+    /// a headless CLI agent — without touching the mode. The server pin
+    /// (server_id/model_id) is never cleared: it simply becomes irrelevant
+    /// while a CLI is the brain.
+    pub fn set_conversation_brain(&self, id: i64, agent_kind: Option<AgentKind>) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE conversations SET agent_kind = ?1 WHERE id = ?2",
+            rusqlite::params![agent_kind.map(|kind| kind.as_str()), id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
     /// Persists the per-conversation chat settings in one write. `None`
     /// clears system prompt / temperature / context length (the request then
-    /// omits them); `thinking` is a flag applied to every subsequent request.
+    /// omits them). Reasoning (`thinking`) is always on — no per-row toggle.
     pub fn set_conversation_settings(
         &self,
         id: i64,
         system_prompt: Option<&str>,
         temperature: Option<f64>,
         context_len: Option<i64>,
-        thinking: bool,
     ) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE conversations
-             SET system_prompt = ?1, temperature = ?2, context_len = ?3, thinking = ?4
-             WHERE id = ?5",
-            rusqlite::params![system_prompt, temperature, context_len, thinking as i64, id],
+             SET system_prompt = ?1, temperature = ?2, context_len = ?3
+             WHERE id = ?4",
+            rusqlite::params![system_prompt, temperature, context_len, id],
         )?;
         if changed == 0 {
             return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
@@ -705,12 +816,14 @@ fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation
         server_id: row.get(2)?,
         model_id: row.get(3)?,
         mode: row.get(4)?,
-        system_prompt: row.get(5)?,
-        temperature: row.get(6)?,
-        context_len: row.get(7)?,
-        thinking: row.get::<_, i64>(8)? != 0,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        agent_kind: row.get(5)?,
+        project_path: row.get(6)?,
+        system_prompt: row.get(7)?,
+        temperature: row.get(8)?,
+        context_len: row.get(9)?,
+        thinking: row.get::<_, i64>(10)? != 0,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 

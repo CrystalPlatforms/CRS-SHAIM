@@ -22,7 +22,7 @@ interface SettingsDialogProps {
   onServersChanged: () => void;
 }
 
-type Tab = "servers" | "system" | "defaults";
+type Tab = "servers" | "system" | "defaults" | "about";
 
 interface ServerStatus {
   state: "unknown" | "checking" | "online" | "offline";
@@ -48,6 +48,7 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
               ["servers", "Servers"],
               ["system", "System prompt"],
               ["defaults", "Defaults"],
+              ["about", "About"],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -70,8 +71,10 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
           <ServersTab open={open} onServersChanged={onServersChanged} />
         ) : tab === "system" ? (
           <SystemPromptTab open={open} />
-        ) : (
+        ) : tab === "defaults" ? (
           <DefaultsTab open={open} />
+        ) : (
+          <AboutTab />
         )}
       </DialogContent>
     </Dialog>
@@ -589,6 +592,18 @@ function DefaultsTab({ open }: { open: boolean }) {
       <p className="text-xs text-muted-foreground">
         Conversations fall back to these defaults when they have no model of their own.
       </p>
+    </div>
+  );
+}
+
+// ---- About tab -------------------------------------------------------------
+
+function AboutTab() {
+  return (
+    <div className="flex flex-col items-center gap-1 py-6 text-center">
+      <h3 className="font-display text-4xl">Shaim</h3>
+      <p className="text-sm text-foreground">Shaim Alpha v.0.0.1</p>
+      <p className="text-xs text-muted-foreground">CrystalPlatforms</p>
     </div>
   );
 }

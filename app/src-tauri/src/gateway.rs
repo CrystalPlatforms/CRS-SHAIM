@@ -65,6 +65,23 @@ pub enum ChatEvent {
     Content { text: String },
 }
 
+/// One function call the model asked for (Agent mode with a server brain).
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+/// Final state of one non-streamed completion: the model's text plus any
+/// tool calls it made (both may be present).
+#[derive(Debug, Clone, Default)]
+pub struct CompletionOutcome {
+    pub content: String,
+    pub thinking: String,
+    pub tool_calls: Vec<ToolCall>,
+}
+
 /// Final state of one streamed completion, including aborts and mid-stream
 /// failures (partial content is preserved in both cases).
 #[derive(Debug, Clone, Default)]
@@ -253,6 +270,162 @@ impl Gateway {
         Ok(outcome)
     }
 
+    /// One non-streamed completion, optionally with tools (Agent mode with a
+    /// server-model brain). `messages` arrive pre-shaped per dialect — the
+    /// agent loop owns the message history, including tool results, because
+    /// the two dialects spell them differently.
+    pub async fn complete(
+        &self,
+        endpoint: &Endpoint,
+        model: &str,
+        messages: Vec<Value>,
+        tools: Option<&Value>,
+        options: &ChatOptions,
+        abort: &AbortFlag,
+    ) -> Result<CompletionOutcome, GatewayError> {
+        if abort.is_aborted() {
+            return Ok(CompletionOutcome::default());
+        }
+        let base = api_base(&endpoint.base_url, endpoint.kind)?;
+        let (mut payload, url) = match endpoint.kind {
+            ServerKind::Ollama => {
+                let mut payload = json!({
+                    "model": model,
+                    "messages": messages,
+                    "stream": false,
+                });
+                if options.thinking {
+                    payload["think"] = json!(true);
+                }
+                let mut tune = serde_json::Map::new();
+                if let Some(temperature) = options.temperature {
+                    tune.insert("temperature".into(), json!(temperature));
+                }
+                if let Some(context_len) = options.context_len {
+                    tune.insert("num_ctx".into(), json!(context_len));
+                }
+                if !tune.is_empty() {
+                    payload["options"] = Value::Object(tune);
+                }
+                (payload, format!("{base}/api/chat"))
+            }
+            ServerKind::OpenAiCompatible => {
+                let mut payload = json!({
+                    "model": model,
+                    "messages": messages,
+                    "stream": false,
+                });
+                if let Some(temperature) = options.temperature {
+                    payload["temperature"] = json!(temperature);
+                }
+                (payload, format!("{base}/chat/completions"))
+            }
+        };
+        if let Some(tools) = tools {
+            payload["tools"] = tools.clone();
+        }
+
+        // Non-streamed completions with tools can legitimately run for
+        // minutes — far past the probe budget; abort rides the loop outside.
+        let mut request = self
+            .http
+            .post(&url)
+            .json(&payload)
+            .timeout(Duration::from_secs(300));
+        if endpoint.kind == ServerKind::OpenAiCompatible {
+            if let Some(key) = endpoint.api_key.as_deref().filter(|k| !k.is_empty()) {
+                request = request.bearer_auth(key);
+            }
+        }
+        if abort.is_aborted() {
+            return Ok(CompletionOutcome::default());
+        }
+        let value = parse_json_response(request.send().await.map_err(map_request_error)?).await?;
+
+        Ok(match endpoint.kind {
+            ServerKind::Ollama => {
+                let message = &value["message"];
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let thinking = message
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let tool_calls = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .enumerate()
+                            .map(|(index, call)| ToolCall {
+                                id: format!("call_{index}"),
+                                name: call
+                                    .pointer("/function/name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                arguments: call
+                                    .pointer("/function/arguments")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({})),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CompletionOutcome {
+                    content,
+                    thinking,
+                    tool_calls,
+                }
+            }
+            ServerKind::OpenAiCompatible => {
+                let message = &value["choices"][0]["message"];
+                let content = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let tool_calls = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|call| ToolCall {
+                                id: call
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("call")
+                                    .to_string(),
+                                name: call
+                                    .pointer("/function/name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                arguments: serde_json::from_str(
+                                    call.pointer("/function/arguments")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("{}"),
+                                )
+                                .unwrap_or_else(|_| json!({})),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CompletionOutcome {
+                    content,
+                    thinking: String::new(),
+                    tool_calls,
+                }
+            }
+        })
+    }
+
     fn request(
         &self,
         endpoint: &Endpoint,
@@ -337,7 +510,7 @@ fn shorten(text: &str) -> String {
 }
 
 /// Strips a `data:image/...;base64,` prefix — Ollama wants bare base64.
-fn bare_base64(image: &str) -> String {
+pub(crate) fn bare_base64(image: &str) -> String {
     if let Some(rest) = image.strip_prefix("data:") {
         if let Some(comma) = rest.find(',') {
             return rest[comma + 1..].to_string();

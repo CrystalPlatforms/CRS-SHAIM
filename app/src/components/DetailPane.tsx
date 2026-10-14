@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Loader2, PanelRightClose } from "lucide-react";
 
 import type { AppSettings, Conversation, ModelInfo, Server } from "@/types";
 import { Button } from "@/components/ui/button";
+import { ModePill } from "@/components/ChatPane";
 import { cn } from "@/lib/utils";
 
 interface DetailPaneProps {
@@ -102,6 +104,8 @@ export function DetailPane({
   const [loadingModels, setLoadingModels] = useState(false);
   const [draft, setDraft] = useState<SettingsDraft>(() => draftOf(conversation));
   const [sysMode, setSysMode] = useState<SystemPromptMode>(() => promptModeOf(conversation));
+  /** A failed brain switch — shown instead of silently reverting. */
+  const [brainError, setBrainError] = useState<string | null>(null);
 
   // Re-read the settings draft whenever another conversation is selected.
   useEffect(() => {
@@ -183,14 +187,10 @@ export function DetailPane({
 
   /**
    * Persists the whole settings block in one call. The text fields commit on
-   * blur / Enter; `thinking` commits immediately, reusing the current drafts
-   * so the four values never disagree.
+   * blur / Enter. Reasoning is always on — there is no toggle to commit.
    */
   const commitSettings = useCallback(
-    async (
-      next: SettingsDraft,
-      thinking: boolean,
-    ) => {
+    async (next: SettingsDraft) => {
       if (!conversation) return;
       const temperature = next.temperature.trim();
       const contextLen = next.contextLen.trim();
@@ -200,11 +200,62 @@ export function DetailPane({
           systemPrompt: next.systemPrompt.trim().length > 0 ? next.systemPrompt : null,
           temperature: temperature.length > 0 ? Number(temperature) : null,
           contextLen: contextLen.length > 0 ? Number(contextLen) : null,
-          thinking,
         });
         onConversationsChanged();
       } catch (error) {
         console.error("Failed to save conversation settings:", error);
+      }
+    },
+    [conversation, onConversationsChanged],
+  );
+
+  /** Switches Natural ↔ Agent immediately — the folder is changed from
+   * the folder row below, no setup dialog. */
+  const switchMode = useCallback(
+    async (mode: string) => {
+      if (!conversation || conversation.mode === mode) return;
+      try {
+        await invoke("set_conversation_mode", { id: conversation.id, mode });
+        onConversationsChanged();
+      } catch (error) {
+        console.error("Failed to switch mode:", error);
+      }
+    },
+    [conversation, onConversationsChanged],
+  );
+
+  /** Repoints the project folder via the native picker. */
+  const changeFolder = useCallback(async () => {
+    if (!conversation) return;
+    try {
+      const picked = await openDialog({ directory: true, multiple: false });
+      if (typeof picked !== "string" || picked.length === 0) return;
+      await invoke("set_conversation_agent", {
+        id: conversation.id,
+        agentKind: conversation.agent_kind,
+        projectPath: picked,
+      });
+      onConversationsChanged();
+    } catch (error) {
+      console.error("Failed to change folder:", error);
+    }
+  }, [conversation, onConversationsChanged]);
+
+  /** Swaps the brain between a server model and the CLI agents. A failed
+   * save is loud — a silent revert would look like the app ignoring you. */
+  const switchBrain = useCallback(
+    async (brain: string) => {
+      if (!conversation) return;
+      setBrainError(null);
+      try {
+        await invoke("set_conversation_brain", {
+          id: conversation.id,
+          agentKind: brain === "server" ? null : brain,
+        });
+        onConversationsChanged();
+      } catch (error) {
+        setBrainError(String(error));
+        console.error("Failed to switch brain:", error);
       }
     },
     [conversation, onConversationsChanged],
@@ -240,14 +291,69 @@ export function DetailPane({
 
         <div className="flex-1 space-y-3 overflow-y-auto p-4 text-xs">
           <Row label="Mode">
-            <div className="text-foreground">
-              {conversation
-                ? conversation.mode.charAt(0).toUpperCase() + conversation.mode.slice(1)
-                : "—"}
+            <div className="flex items-center gap-1.5">
+              <ModePill
+                label="Natural"
+                active={conversation?.mode !== "agent"}
+                disabled={!conversation}
+                onClick={() => void switchMode("natural")}
+              />
+              <ModePill
+                label="Agent"
+                active={conversation?.mode === "agent"}
+                disabled={!conversation}
+                onClick={() => void switchMode("agent")}
+              />
             </div>
           </Row>
 
-          <Row label="Server">
+          {/* The brain: a server model or one of the headless CLIs — the
+              mode decides how much of the computer it may touch. */}
+          <Row label="Brain">
+            <select
+              aria-label="Brain"
+              value={conversation?.agent_kind ?? "server"}
+              disabled={!conversation}
+              onChange={(event) => void switchBrain(event.target.value)}
+              className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 outline-none disabled:opacity-50"
+            >
+              <option value="server">Server model</option>
+              <option value="claude_code">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
+          </Row>
+
+          {brainError && (
+            <p className="text-[11px] text-destructive" role="alert">
+              {brainError}
+            </p>
+          )}
+
+          {conversation?.agent_kind != null ? (
+            <>
+              {conversation.mode === "agent" && (
+                <>
+                  <Row label="Project folder">
+                    <div className="break-all font-mono text-[11px] text-muted-foreground">
+                      {conversation.project_path ?? "—"}
+                    </div>
+                  </Row>
+                  <div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => void changeFolder()}
+                    >
+                      Change folder…
+                    </Button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <Row label="Server">
             <select
               aria-label="Server"
               value={conversation?.server_id ?? ""}
@@ -291,10 +397,7 @@ export function DetailPane({
                     setSysMode(mode);
                     if (mode === "default") {
                       // Leaving Custom clears the prompt right away.
-                      void commitSettings(
-                        { ...draft, systemPrompt: "" },
-                        conversation.thinking,
-                      );
+                      void commitSettings({ ...draft, systemPrompt: "" });
                     }
                   }}
                   className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 outline-none"
@@ -315,7 +418,7 @@ export function DetailPane({
                         systemPrompt: event.target.value,
                       }))
                     }
-                    onBlur={() => void commitSettings(draft, conversation.thinking)}
+                    onBlur={() => void commitSettings(draft)}
                     className="w-full resize-y rounded-md border border-input bg-input px-2 py-1.5 outline-none placeholder:text-muted-foreground"
                   />
                 )}
@@ -337,7 +440,7 @@ export function DetailPane({
                       temperature: event.target.value,
                     }))
                   }
-                  onBlur={() => void commitSettings(draft, conversation.thinking)}
+                  onBlur={() => void commitSettings(draft)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.currentTarget.blur();
@@ -362,7 +465,7 @@ export function DetailPane({
                       contextLen: event.target.value,
                     }))
                   }
-                  onBlur={() => void commitSettings(draft, conversation.thinking)}
+                  onBlur={() => void commitSettings(draft)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.currentTarget.blur();
@@ -371,23 +474,8 @@ export function DetailPane({
                   className="w-full rounded-md border border-input bg-input px-2 py-1.5 outline-none placeholder:text-muted-foreground"
                 />
               </Row>
-
-              <Row label="Thinking">
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    aria-label="Thinking"
-                    type="checkbox"
-                    checked={conversation.thinking}
-                    onChange={(event) =>
-                      void commitSettings(draft, event.target.checked)
-                    }
-                    className="h-3.5 w-3.5 accent-primary"
-                  />
-                  <span className="text-foreground">
-                    Ask the model to reason out loud
-                  </span>
-                </label>
-              </Row>
+            </>
+          )}
             </>
           )}
         </div>

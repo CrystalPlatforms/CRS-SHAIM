@@ -1,3 +1,5 @@
+pub mod agent;
+pub mod tools;
 pub mod commands;
 pub mod gateway;
 pub mod store;
@@ -24,6 +26,7 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let store = store::Store::open(&data_dir.join("shaim.db"))?;
@@ -47,12 +50,19 @@ pub fn run() {
             commands::rename_conversation,
             commands::delete_conversation,
             commands::set_conversation_model,
+            commands::set_conversation_mode,
+            commands::set_conversation_agent,
+            commands::set_conversation_brain,
+            commands::list_agent_skills,
+            commands::save_attachment,
+            commands::list_cli_models,
             commands::list_messages,
             commands::get_settings,
             commands::set_default_model,
             commands::set_default_system_prompt,
             commands::set_conversation_settings,
             commands::send_message,
+            commands::send_agent_message,
             commands::regenerate,
             commands::edit_message,
             commands::stop_generation,
@@ -60,6 +70,7 @@ pub fn run() {
             commands::set_reaction,
             commands::fork_conversation,
             commands::search_messages,
+            commands::list_project_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

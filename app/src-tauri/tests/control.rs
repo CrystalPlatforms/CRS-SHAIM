@@ -144,21 +144,21 @@ fn per_conversation_settings_round_trip_through_the_store() {
     let conv = store.create_conversation(None).unwrap();
 
     store
-        .set_conversation_settings(conv.id, Some("Be terse."), Some(0.3), Some(2048), true)
+        .set_conversation_settings(conv.id, Some("Be terse."), Some(0.3), Some(2048))
         .unwrap();
     let reloaded = store.get_conversation(conv.id).unwrap();
     assert_eq!(reloaded.system_prompt.as_deref(), Some("Be terse."));
     assert_eq!(reloaded.temperature, Some(0.3));
     assert_eq!(reloaded.context_len, Some(2048));
-    assert!(reloaded.thinking);
 
     // Clearing means NULLs again — the request then omits the knobs.
-    store.set_conversation_settings(conv.id, None, None, None, false).unwrap();
+    // Reasoning is not among the knobs: it is always on (see the payload
+    // test below), so there is no thinking flag to round-trip.
+    store.set_conversation_settings(conv.id, None, None, None).unwrap();
     let reloaded = store.get_conversation(conv.id).unwrap();
     assert_eq!(reloaded.system_prompt, None);
     assert_eq!(reloaded.temperature, None);
     assert_eq!(reloaded.context_len, None);
-    assert!(!reloaded.thinking);
 }
 
 #[tokio::test]
@@ -173,7 +173,7 @@ async fn per_conversation_settings_are_included_in_the_request_payload() {    le
         .set_conversation_model(conv.id, Some(server.id), Some("llama3:8b"))
         .unwrap();
     store
-        .set_conversation_settings(conv.id, Some("You are terse."), Some(0.7), Some(4096), true)
+        .set_conversation_settings(conv.id, Some("You are terse."), Some(0.7), Some(4096))
         .unwrap();
     store.insert_message(conv.id, "user", "hello").unwrap();
 
@@ -206,7 +206,7 @@ async fn per_conversation_settings_are_included_in_the_request_payload() {    le
     // Temperature and context length ride the Ollama options block…
     assert_eq!(payload["options"]["temperature"], 0.7);
     assert_eq!(payload["options"]["num_ctx"], 4096);
-    // …and the thinking flag flips Ollama's `think` switch.
+    // …and reasoning is always on — `think` ships with every request.
     assert_eq!(payload["think"], true);
 }
 
@@ -240,7 +240,7 @@ fn conversation_without_prompt_falls_back_to_the_default_system_prompt() {
 
     // …but an explicit conversation prompt still wins over the default.
     store
-        .set_conversation_settings(conv.id, Some("Custom override."), None, None, false)
+        .set_conversation_settings(conv.id, Some("Custom override."), None, None)
         .unwrap();
     let (_, _, options) = resolve_target(&store, conv.id).unwrap();
     assert_eq!(options.system_prompt.as_deref(), Some("Custom override."));
@@ -248,7 +248,7 @@ fn conversation_without_prompt_falls_back_to_the_default_system_prompt() {
     // Clearing the default leaves conversations untouched.
     store.set_default_system_prompt(None).unwrap();
     store
-        .set_conversation_settings(conv.id, None, None, None, false)
+        .set_conversation_settings(conv.id, None, None, None)
         .unwrap();
     let (_, _, options) = resolve_target(&store, conv.id).unwrap();
     assert_eq!(options.system_prompt, None);

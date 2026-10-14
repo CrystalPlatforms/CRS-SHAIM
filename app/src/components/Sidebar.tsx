@@ -201,7 +201,7 @@ export function Sidebar({
                     className={cn(
                       "block w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors",
                       conversation.id === selectedId
-                        ? "bg-sidebar-accent text-sidebar-accent-foreground ring-2 ring-inset ring-emerald-700"
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                     )}
                   >
