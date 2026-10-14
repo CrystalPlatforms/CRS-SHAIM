@@ -7,7 +7,7 @@
 //!   when the user's base URL already ends in `/v1`), `POST .../chat/completions`
 //!   (SSE `data:` lines), Bearer auth when a key is configured, images as
 //!   `image_url` content parts with the data URL intact.
-//! - Probes (list_models) give up within ~3 s; clear error text either way.
+//! - Probes (list_models) give up within ~10 s; clear error text either way.
 //! - Aborting mid-stream stops quickly and returns the partial content with
 //!   `aborted = true`; the stream connection is dropped (the mock sees the
 //!   write fail), not left running to completion.
@@ -128,7 +128,7 @@ async fn unreachable_host_fails_fast_with_clear_error() {
         .await;
 
     let error = result.expect_err("closed port must fail");
-    assert!(elapsed_lt(started, Duration::from_millis(3000)), "must fail within 3 s, took {:?}", started.elapsed());
+    assert!(elapsed_lt(started, Duration::from_millis(11_000)), "must fail within the 10 s budget, took {:?}", started.elapsed());
     let message = error.to_string();
     assert!(
         message.to_lowercase().contains("connection"),
@@ -146,9 +146,9 @@ async fn silent_host_times_out_within_budget() {
         .await;
 
     let error = result.expect_err("a silent host must time out");
-    assert!(elapsed_lt(started, Duration::from_millis(4000)), "timeout must land near the 3 s budget, took {:?}", started.elapsed());
+    assert!(elapsed_lt(started, Duration::from_millis(11_000)), "timeout must land near the 10 s budget, took {:?}", started.elapsed());
     assert!(
-        error.to_string().contains("Timed out"),
+        error.to_string().contains("Timeout"),
         "error should name the timeout, got: {error}"
     );
 }

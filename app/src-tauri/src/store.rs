@@ -92,6 +92,19 @@ pub struct Message {
 pub struct Settings {
     pub default_server_id: Option<i64>,
     pub default_model_id: Option<String>,
+    pub default_system_prompt: Option<String>,
+}
+
+/// One full-text search hit: the message plus the context the UI needs to
+/// jump into its conversation.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchHit {
+    pub message_id: i64,
+    pub conversation_id: i64,
+    pub conversation_title: String,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: i64,
 }
 
 /// Column lists shared by RETURNING/SELECT so every read maps in one order.
@@ -136,9 +149,10 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE TABLE IF NOT EXISTS settings (
-    id                INTEGER PRIMARY KEY CHECK (id = 1),
-    default_server_id INTEGER REFERENCES servers(id) ON DELETE SET NULL,
-    default_model_id  TEXT
+    id                    INTEGER PRIMARY KEY CHECK (id = 1),
+    default_server_id     INTEGER REFERENCES servers(id) ON DELETE SET NULL,
+    default_model_id      TEXT,
+    default_system_prompt TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -189,9 +203,23 @@ impl Store {
     }
 
     /// Creates the schema if it does not exist yet. Idempotent by design —
-    /// every statement uses `IF NOT EXISTS`.
+    /// every statement uses `IF NOT EXISTS`, and column additions are
+    /// guarded by a `pragma_table_info` check so older database files
+    /// migrate in place on reopen.
     fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(SCHEMA)?;
+        let has_system_prompt: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings')
+             WHERE name = 'default_system_prompt'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_system_prompt == 0 {
+            conn.execute(
+                "ALTER TABLE settings ADD COLUMN default_system_prompt TEXT",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -280,6 +308,29 @@ impl Store {
         let changed = self.conn.execute(
             "UPDATE conversations SET server_id = ?1, model_id = ?2 WHERE id = ?3",
             rusqlite::params![server_id, model_id, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Persists the per-conversation chat settings in one write. `None`
+    /// clears system prompt / temperature / context length (the request then
+    /// omits them); `thinking` is a flag applied to every subsequent request.
+    pub fn set_conversation_settings(
+        &self,
+        id: i64,
+        system_prompt: Option<&str>,
+        temperature: Option<f64>,
+        context_len: Option<i64>,
+        thinking: bool,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE conversations
+             SET system_prompt = ?1, temperature = ?2, context_len = ?3, thinking = ?4
+             WHERE id = ?5",
+            rusqlite::params![system_prompt, temperature, context_len, thinking as i64, id],
         )?;
         if changed == 0 {
             return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
@@ -417,18 +468,180 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    // ---- Message control (edit / regenerate / delete) ----------------------
+
+    /// One message by id.
+    pub fn get_message(&self, id: i64) -> Result<Message> {
+        self.conn
+            .query_row(
+                &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"),
+                [id],
+                row_to_message,
+            )
+            .map_err(StoreError::from)
+    }
+
+    /// Newest message of a conversation, if any.
+    pub fn last_message(&self, conversation_id: i64) -> Result<Option<Message>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {MESSAGE_COLUMNS} FROM messages
+                     WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1"
+                ),
+                [conversation_id],
+                row_to_message,
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(StoreError::from(other)),
+            })
+    }
+
+    /// Deletes one message; the FTS index is cleaned by trigger.
+    pub fn delete_message(&self, id: i64) -> Result<()> {
+        let changed = self.conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Rewrites one message's content in place; the FTS index follows by
+    /// trigger.
+    pub fn update_message_content(&self, id: i64, content: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2",
+            rusqlite::params![content, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Deletes every message of the conversation strictly after `after_id` —
+    /// id order is the conversation path in the Alpha. Returns how many were
+    /// removed; the FTS index follows row by row by trigger.
+    pub fn truncate_after(&self, conversation_id: i64, after_id: i64) -> Result<usize> {
+        let changed = self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND id > ?2",
+            rusqlite::params![conversation_id, after_id],
+        )?;
+        Ok(changed)
+    }
+
+    /// Sets or clears (`None`) the message's personal emoji reaction.
+    pub fn set_reaction(&self, id: i64, reaction: Option<&str>) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE messages SET reaction = ?1 WHERE id = ?2",
+            rusqlite::params![reaction, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Forks the conversation at `from_message_id`: that message and
+    /// everything after it are copied into a brand-new conversation; nothing
+    /// before is cloned and the original is left byte-identical. The fork
+    /// inherits the conversation settings (server/model pin included) and
+    /// takes its title from the message it starts at.
+    pub fn fork_conversation(
+        &self,
+        conversation_id: i64,
+        from_message_id: i64,
+    ) -> Result<Conversation> {
+        // Fails loudly when either the conversation or the message is gone,
+        // and when the message lives somewhere else.
+        self.get_conversation(conversation_id)?;
+        let start = self.get_message(from_message_id)?;
+        if start.conversation_id != conversation_id {
+            return Err(StoreError::Sqlite(
+                rusqlite::Error::InvalidParameterName(
+                    "message does not belong to this conversation".into(),
+                ),
+            ));
+        }
+        let title = autotitle_from(&start.content);
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO conversations (title, server_id, model_id, mode, system_prompt, temperature, context_len, thinking)
+             SELECT ?1, server_id, model_id, mode, system_prompt, temperature, context_len, thinking
+             FROM conversations WHERE id = ?2",
+            rusqlite::params![title, conversation_id],
+        )?;
+        let new_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO messages (conversation_id, role, content, thinking, images, reaction, created_at)
+             SELECT ?1, role, content, thinking, images, reaction, created_at
+             FROM messages
+             WHERE conversation_id = ?2 AND id >= ?3
+             ORDER BY id",
+            rusqlite::params![new_id, conversation_id, from_message_id],
+        )?;
+        tx.commit()?;
+
+        self.get_conversation(new_id)
+    }
+
+    // ---- Search ------------------------------------------------------------
+
+    /// Full-text search across all conversations via the FTS5 index. The
+    /// index itself is kept in sync by triggers (insert / update / delete),
+    /// so there is nothing to maintain here. Terms are ANDed and matched as
+    /// prefixes ("ker" hits "kernel"); every term is double-quoted so user
+    /// input can never inject FTS syntax. `limit` caps the result count,
+    /// best matches first.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let fts_query = build_fts_query(query);
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.conversation_id, c.title, m.role,
+                    snippet(messages_fts, 0, '', '', '…', 16), m.created_at
+             FROM messages_fts
+             JOIN messages m ON m.id = messages_fts.rowid
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE messages_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![fts_query, limit as i64],
+            |row| {
+                Ok(SearchHit {
+                    message_id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    conversation_title: row.get(2)?,
+                    role: row.get(3)?,
+                    snippet: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     // ---- Settings ---------------------------------------------------------
 
     /// App-level defaults. A missing row (never configured) reads as empty.
     pub fn get_settings(&self) -> Result<Settings> {
         self.conn
             .query_row(
-                "SELECT default_server_id, default_model_id FROM settings WHERE id = 1",
+                "SELECT default_server_id, default_model_id, default_system_prompt
+                 FROM settings WHERE id = 1",
                 [],
                 |row| {
                     Ok(Settings {
                         default_server_id: row.get(0)?,
                         default_model_id: row.get(1)?,
+                        default_system_prompt: row.get(2)?,
                     })
                 },
             )
@@ -436,6 +649,17 @@ impl Store {
                 rusqlite::Error::QueryReturnedNoRows => Ok(Settings::default()),
                 other => Err(StoreError::Sqlite(other)),
             })
+    }
+
+    /// Sets (or clears with `None`) the app-wide default system prompt.
+    /// The server/model defaults, if configured, are left untouched.
+    pub fn set_default_system_prompt(&self, prompt: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (id, default_system_prompt) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET default_system_prompt = ?1",
+            rusqlite::params![prompt],
+        )?;
+        Ok(())
     }
 
     /// Sets the default server/model pair (upsert on the single settings row).
@@ -530,4 +754,15 @@ fn autotitle_from(raw: &str) -> String {
         let cut: String = first_line.chars().take(MAX - 1).collect();
         format!("{cut}…")
     }
+}
+
+/// Turns free text into a safe FTS5 query: every whitespace-separated term
+/// is double-quoted (so punctuation can never inject FTS syntax) and made a
+/// prefix match; terms are ANDed together.
+fn build_fts_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }

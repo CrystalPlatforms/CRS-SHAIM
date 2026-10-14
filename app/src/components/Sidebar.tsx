@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { PanelLeftClose, Pencil, Plus, Settings, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { MessageSquare, PanelLeftClose, Pencil, Plus, Search, Settings, Trash2 } from "lucide-react";
 
-import type { Conversation } from "@/types";
+import type { Conversation, SearchHit } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -31,6 +32,8 @@ interface SidebarProps {
   onDelete: (id: number) => void;
   onClose: () => void;
   onOpenSettings: () => void;
+  /** Jumps into a search hit's conversation, scrolled to the message. */
+  onJumpTo: (hit: SearchHit) => void;
 }
 
 /**
@@ -48,10 +51,39 @@ export function Sidebar({
   onDelete,
   onClose,
   onOpenSettings,
+  onJumpTo,
 }: SidebarProps) {
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<Conversation | null>(null);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const searchMode = hits !== null;
+
+  // Debounced full-text search: null hits means "not searching", an array
+  // (possibly empty) means "show the results list".
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length === 0) {
+      setHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      invoke<SearchHit[]>("search_messages", { query: trimmed, limit: 50 })
+        .then((found) => {
+          if (!cancelled) setHits(found);
+        })
+        .catch((err) => {
+          console.error("Search failed:", err);
+          if (!cancelled) setHits([]);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
 
   const submitRename = (event: React.FormEvent) => {
     event.preventDefault();
@@ -117,8 +149,45 @@ export function Sidebar({
           </div>
         </header>
 
+        <div className="px-3 pb-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search…"
+              aria-label="Search conversations"
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
+        </div>
+
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
-          {conversations.length === 0 ? (
+          {searchMode ? (
+            hits.length === 0 ? (
+              <div className="px-3 py-10 text-center text-xs text-muted-foreground">
+                <p>No messages match “{query.trim()}”.</p>
+              </div>
+            ) : (
+              hits.map((hit) => (
+                <button
+                  key={hit.message_id}
+                  type="button"
+                  onClick={() => onJumpTo(hit)}
+                  className="block w-full rounded-md px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/50"
+                >
+                  <div className="flex items-center gap-1.5 truncate text-xs font-medium text-sidebar-foreground">
+                    <MessageSquare className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{hit.conversation_title}</span>
+                  </div>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                    {hit.snippet}
+                  </p>
+                </button>
+              ))
+            )
+          ) : conversations.length === 0 ? (
             <div className="px-3 py-10 text-center text-xs text-muted-foreground">
               <p>No conversations yet.</p>
             </div>
@@ -132,7 +201,7 @@ export function Sidebar({
                     className={cn(
                       "block w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors",
                       conversation.id === selectedId
-                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground ring-2 ring-inset ring-emerald-700"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                     )}
                   >

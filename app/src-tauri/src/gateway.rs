@@ -4,7 +4,7 @@
 //! Deep module: the rest of the app cannot tell the Ollama and
 //! OpenAI-compatible dialects apart. Surface:
 //!
-//! - [`Gateway::list_models`] — model ids for the picker (3 s total timeout)
+//! - [`Gateway::list_models`] — model ids for the picker (10 s total timeout)
 //! - [`Gateway::chat`] — streamed completion, delivering [`ChatEvent`]s as
 //!   they arrive; abortable via [`AbortFlag`]
 //!
@@ -23,8 +23,9 @@ use serde_json::{json, Value};
 
 use crate::store::ServerKind;
 
-/// Budget for reachability checks — a dead host must answer "no" fast.
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Budget for reachability checks and connect phases — sleepy LAN boxes
+/// (cold model load, spinning rust) get a full ten seconds.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct Endpoint {
@@ -80,7 +81,7 @@ pub enum GatewayError {
     InvalidUrl(String),
     #[error("Connection failed: {0}")]
     Connect(String),
-    #[error("Timed out after 3 s — the server did not respond")]
+    #[error("Timeout: 10 s - server asleep")]
     Timeout,
     #[error("Server answered HTTP {status}: {body}")]
     Http { status: u16, body: String },

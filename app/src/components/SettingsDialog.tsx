@@ -22,7 +22,7 @@ interface SettingsDialogProps {
   onServersChanged: () => void;
 }
 
-type Tab = "servers" | "defaults";
+type Tab = "servers" | "system" | "defaults";
 
 interface ServerStatus {
   state: "unknown" | "checking" | "online" | "offline";
@@ -46,6 +46,7 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
           {(
             [
               ["servers", "Servers"],
+              ["system", "System prompt"],
               ["defaults", "Defaults"],
             ] as const
           ).map(([key, label]) => (
@@ -67,6 +68,8 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
 
         {tab === "servers" ? (
           <ServersTab open={open} onServersChanged={onServersChanged} />
+        ) : tab === "system" ? (
+          <SystemPromptTab open={open} />
         ) : (
           <DefaultsTab open={open} />
         )}
@@ -412,6 +415,64 @@ function ServerFormDialog({
   );
 }
 
+// ---- System prompt tab ----------------------------------------------------
+
+function SystemPromptTab({ open }: { open: boolean }) {
+  const [prompt, setPrompt] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void (async () => {
+      try {
+        const current = await invoke<AppSettings>("get_settings");
+        setPrompt(current.default_system_prompt ?? "");
+      } catch (error) {
+        console.error("Failed to load settings:", error);
+      }
+    })();
+  }, [open]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await invoke("set_default_system_prompt", {
+        prompt: prompt.trim().length > 0 ? prompt : null,
+      });
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1500);
+    } catch (error) {
+      console.error("Failed to save default system prompt:", error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <label className="block space-y-1">
+        <span className="text-xs text-muted-foreground">Default system prompt</span>
+        <textarea
+          rows={6}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Instructions sent with every conversation whose system prompt is left on “Use default”…"
+          className="w-full resize-y rounded-md border border-input bg-input px-2 py-2 text-sm outline-none placeholder:text-muted-foreground"
+        />
+      </label>
+      <div className="flex items-center justify-end gap-2">
+        {saved && <span className="text-xs text-primary">Saved.</span>}
+        <Button type="submit" size="sm" disabled={saving}>
+          {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+          Save
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 // ---- Defaults tab -------------------------------------------------------
 
 function DefaultsTab({ open }: { open: boolean }) {
@@ -464,7 +525,11 @@ function DefaultsTab({ open }: { open: boolean }) {
   const save = async (serverId: number | null, modelId: string | null) => {
     try {
       await invoke("set_default_model", { serverId, modelId });
-      setSettings({ default_server_id: serverId, default_model_id: modelId });
+      setSettings((current) => ({
+        default_server_id: serverId,
+        default_model_id: modelId,
+        default_system_prompt: current?.default_system_prompt ?? null,
+      }));
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1500);
     } catch (error) {

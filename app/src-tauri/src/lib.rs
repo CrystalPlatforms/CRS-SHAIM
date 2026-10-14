@@ -1,4 +1,4 @@
-mod commands;
+pub mod commands;
 pub mod gateway;
 pub mod store;
 
@@ -50,8 +50,16 @@ pub fn run() {
             commands::list_messages,
             commands::get_settings,
             commands::set_default_model,
+            commands::set_default_system_prompt,
+            commands::set_conversation_settings,
             commands::send_message,
+            commands::regenerate,
+            commands::edit_message,
             commands::stop_generation,
+            commands::delete_message,
+            commands::set_reaction,
+            commands::fork_conversation,
+            commands::search_messages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

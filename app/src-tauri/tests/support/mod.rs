@@ -6,6 +6,9 @@
 //! pieces written with pauses, which simulates token streaming without any
 //! extra dependency.
 
+// Shared across several test binaries that each use a different subset.
+#![allow(dead_code)]
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::{channel, Sender};
@@ -217,8 +220,8 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<CapturedRequest> {
 fn write_response(stream: &mut std::net::TcpStream, response: &MockResponse) {
     match &response.body {
         Body::Stall => {
-            // Outlast the client's 3 s probe timeout; it must give up first.
-            std::thread::sleep(Duration::from_secs(5));
+            // Outlast the client's 10 s probe timeout; it must give up first.
+            std::thread::sleep(Duration::from_secs(11));
         }
         Body::Full(text) => {
             let head = format!(

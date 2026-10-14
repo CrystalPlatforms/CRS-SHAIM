@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { Conversation } from "@/types";
+import type { Conversation, SearchHit } from "@/types";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPane } from "@/components/ChatPane";
 import { DetailPane } from "@/components/DetailPane";
 import { SettingsDialog } from "@/components/SettingsDialog";
 
+/** A pending "open this conversation scrolled to this message" request. */
+interface JumpTarget {
+  conversationId: number;
+  messageId: number;
+}
+
 export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -55,6 +62,21 @@ export default function App() {
     }
   };
 
+  /** Opens a conversation by clicking its row — a pending jump for a
+   * different conversation is stale and cleared. */
+  const handleSelect = (id: number) => {
+    setJumpTarget((current) =>
+      current && current.conversationId !== id ? null : current,
+    );
+    setSelectedId(id);
+  };
+
+  /** Opens the hit's conversation and asks ChatPane to scroll to it. */
+  const handleJumpTo = (hit: SearchHit) => {
+    setJumpTarget({ conversationId: hit.conversation_id, messageId: hit.message_id });
+    setSelectedId(hit.conversation_id);
+  };
+
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
 
   return (
@@ -63,12 +85,13 @@ export default function App() {
         conversations={conversations}
         selectedId={selectedId}
         open={sidebarOpen}
-        onSelect={setSelectedId}
+        onSelect={handleSelect}
         onCreate={handleCreate}
         onRename={handleRename}
         onDelete={handleDelete}
         onClose={() => setSidebarOpen(false)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onJumpTo={handleJumpTo}
       />
       <ChatPane
         conversation={selected}
@@ -77,6 +100,9 @@ export default function App() {
         detailsOpen={detailsOpen}
         onOpenDetails={() => setDetailsOpen(true)}
         onConversationsChanged={() => void refresh()}
+        onSelectConversation={setSelectedId}
+        jumpTarget={jumpTarget}
+        onJumpHandled={() => setJumpTarget(null)}
       />
       <DetailPane
         conversation={selected}

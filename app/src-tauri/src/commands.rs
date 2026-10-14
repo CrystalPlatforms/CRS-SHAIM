@@ -152,6 +152,19 @@ pub fn set_default_model(
     })
 }
 
+/// Sets (or clears) the app-wide default system prompt. An empty string
+/// means "no default prompt".
+#[tauri::command]
+pub fn set_default_system_prompt(
+    state: State<'_, AppState>,
+    prompt: Option<String>,
+) -> CmdResult<()> {
+    with_store(&state, |store| {
+        let prompt = prompt.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        store.set_default_system_prompt(prompt)
+    })
+}
+
 // ---- Streamed chat -----------------------------------------------------------
 
 /// Events pushed to the UI while a generation is running. The tag lands in
@@ -160,6 +173,14 @@ pub fn set_default_model(
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamEvent {
     UserMessage { id: i64, content: String, images: Vec<String> },
+    /// Canonical history after a store-side rewrite (edit truncation,
+    /// regenerate removal) — the UI mirrors it wholesale.
+    History { messages: Vec<Message> },
+    /// Sent as soon as the generation is registered. Carries the id the UI
+    /// needs for `stop_generation` — the command itself only returns after
+    /// the whole stream, so without this event Stop could never fire
+    /// mid-stream.
+    Started { generation_id: u64 },
     Thinking { text: String },
     Content { text: String },
     TitleChanged { title: String },
@@ -168,8 +189,9 @@ pub enum ChatStreamEvent {
 }
 
 /// Resolves which server/model a conversation should use: the conversation's
-/// own pin, falling back to the Settings defaults.
-fn resolve_target(
+/// own pin, falling back to the Settings defaults. Public so integration
+/// tests can drive the exact mapping the send pipeline uses.
+pub fn resolve_target(
     store: &Store,
     conversation_id: i64,
 ) -> crate::store::Result<(Endpoint, String, ChatOptions)> {
@@ -202,7 +224,12 @@ fn resolve_target(
     };
 
     let options = ChatOptions {
-        system_prompt: conversation.system_prompt.clone(),
+        // The conversation's own prompt; "Use default" (None) falls back to
+        // the app-wide default system prompt from Settings.
+        system_prompt: conversation
+            .system_prompt
+            .clone()
+            .or_else(|| settings.default_system_prompt.clone()),
         temperature: conversation.temperature,
         context_len: conversation.context_len,
         thinking: conversation.thinking,
@@ -224,12 +251,11 @@ pub async fn send_message(
     images: Vec<String>,
     channel: Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
-    // 1. Resolve the target and persist the user message (store lock held
-    //    only here — never across the await).
-    let (endpoint, model, options, user_message, title_changed) = {
+    // 1. Persist the user message first (auto-titling from it if this is the
+    //    first one); the target itself is resolved by `stream_reply` from the
+    //    persisted state (store lock held only here — never across the await).
+    let (user_message, title_changed) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
-        let (endpoint, model, options) = resolve_target(&guard, conversation_id)
-            .map_err(|e| e.to_string())?;
         let user_message = guard
             .insert_message_full(conversation_id, "user", &content, None, &images)
             .map_err(|e| e.to_string())?;
@@ -237,7 +263,7 @@ pub async fn send_message(
             .maybe_autotitle(conversation_id, &content)
             .map_err(|e| e.to_string())?;
         guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
-        (endpoint, model, options, user_message, title_changed)
+        (user_message, title_changed)
     };
 
     let _ = channel.send(ChatStreamEvent::UserMessage {
@@ -253,8 +279,25 @@ pub async fn send_message(
         let _ = channel.send(ChatStreamEvent::TitleChanged { title });
     }
 
-    // 2. Build the request context from full history (the new user message
-    //    included — it is already persisted).
+    stream_reply(&state, conversation_id, &channel).await
+}
+
+/// Streams an assistant reply for the conversation's history as stored and
+/// persists it. Shared by send / regenerate / edit — all three converge on
+/// "history as stored → one streamed assistant message appended", so control
+/// actions reuse the exact same send/stream path.
+async fn stream_reply(
+    state: &State<'_, AppState>,
+    conversation_id: i64,
+    channel: &Channel<ChatStreamEvent>,
+) -> CmdResult<u64> {
+    // 1. Resolve the target from the (already persisted) state.
+    let (endpoint, model, options) = {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?
+    };
+
+    // 2. Build the request context from full history.
     let turns: Vec<ChatTurn> = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         guard
@@ -278,6 +321,8 @@ pub async fn send_message(
         .lock()
         .map_err(|_| "generation lock poisoned")?
         .insert(generation_id, abort.clone());
+    // Tell the UI the id immediately — Stop must work mid-stream.
+    let _ = channel.send(ChatStreamEvent::Started { generation_id });
 
     let outcome = state
         .gateway
@@ -339,6 +384,133 @@ pub async fn send_message(
         aborted: outcome.aborted,
     });
     Ok(generation_id)
+}
+
+/// Regenerates the reply. When the history ends with an assistant message it
+/// is removed first — replaced, never appended to — and a fresh one is
+/// streamed for the same history. When it ends with a user message (a send
+/// that failed before any reply arrived) nothing is removed and the reply is
+/// simply attempted again — which is also what the UI's Retry button does.
+#[tauri::command]
+pub async fn regenerate(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    channel: Channel<ChatStreamEvent>,
+) -> CmdResult<u64> {
+    {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        if let Some(last) = guard.last_message(conversation_id).map_err(|e| e.to_string())? {
+            if last.role == "assistant" {
+                guard.delete_message(last.id).map_err(|e| e.to_string())?;
+                let messages = guard.list_messages(conversation_id).map_err(|e| e.to_string())?;
+                let _ = channel.send(ChatStreamEvent::History { messages });
+            }
+        }
+        guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
+    }
+    stream_reply(&state, conversation_id, &channel).await
+}
+
+/// Edits one of the user's own messages: rewrites its content, drops every
+/// later message in the path, and streams a fresh reply from that point.
+/// The original message's image attachments are kept.
+#[tauri::command]
+pub async fn edit_message(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    message_id: i64,
+    content: String,
+    channel: Channel<ChatStreamEvent>,
+) -> CmdResult<u64> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("edited message must not be empty".into());
+    }
+    {
+        let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let message = guard.get_message(message_id).map_err(|e| e.to_string())?;
+        if message.conversation_id != conversation_id {
+            return Err("message does not belong to this conversation".into());
+        }
+        if message.role != "user" {
+            return Err("only your own messages can be edited".into());
+        }
+        guard
+            .update_message_content(message_id, &content)
+            .map_err(|e| e.to_string())?;
+        guard
+            .truncate_after(conversation_id, message_id)
+            .map_err(|e| e.to_string())?;
+        guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
+        let messages = guard.list_messages(conversation_id).map_err(|e| e.to_string())?;
+        let _ = channel.send(ChatStreamEvent::History { messages });
+    }
+    stream_reply(&state, conversation_id, &channel).await
+}
+
+/// Persists the per-conversation chat settings. An empty system prompt means
+/// "no prompt"; empty number fields arrive as `None` and clear the value.
+#[tauri::command]
+pub fn set_conversation_settings(
+    state: State<'_, AppState>,
+    id: i64,
+    system_prompt: Option<String>,
+    temperature: Option<f64>,
+    context_len: Option<i64>,
+    thinking: bool,
+) -> CmdResult<()> {
+    with_store(&state, |store| {
+        let prompt = system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        store.set_conversation_settings(id, prompt, temperature, context_len, thinking)
+    })
+}
+
+// ---- Message actions ---------------------------------------------------------
+
+#[tauri::command]
+pub fn delete_message(state: State<'_, AppState>, message_id: i64) -> CmdResult<()> {
+    with_store(&state, |store| store.delete_message(message_id))
+}
+
+/// Toggles a personal emoji reaction; `None` clears it.
+#[tauri::command]
+pub fn set_reaction(
+    state: State<'_, AppState>,
+    message_id: i64,
+    reaction: Option<String>,
+) -> CmdResult<()> {
+    with_store(&state, |store| {
+        store.set_reaction(message_id, reaction.as_deref())
+    })
+}
+
+/// Copies the selected message and everything after it into a new
+/// conversation. The UI only triggers it — the semantics live in the Store.
+#[tauri::command]
+pub fn fork_conversation(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    message_id: i64,
+) -> CmdResult<Conversation> {
+    with_store(&state, |store| {
+        store.fork_conversation(conversation_id, message_id)
+    })
+}
+
+// ---- Search ------------------------------------------------------------------
+
+/// Full-text search across all conversations. Hits carry the conversation
+/// context so the UI can jump straight to the message.
+#[tauri::command]
+pub fn search_messages(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> CmdResult<Vec<crate::store::SearchHit>> {
+    with_store(&state, |store| store.search(&query, limit.unwrap_or(50)))
 }
 
 /// Aborts a running generation. The send pipeline notices within ~150 ms and

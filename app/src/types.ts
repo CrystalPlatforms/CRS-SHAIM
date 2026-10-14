@@ -42,11 +42,24 @@ export interface Message {
 export interface AppSettings {
   default_server_id: number | null;
   default_model_id: string | null;
+  default_system_prompt: string | null;
 }
 
-/** Events streamed from `send_message` over a Tauri channel. */
+/** One full-text search hit, with the context needed to jump to the message. */
+export interface SearchHit {
+  message_id: number;
+  conversation_id: number;
+  conversation_title: string;
+  role: string;
+  snippet: string;
+  created_at: number;
+}
+
+/** Events streamed from the chat commands over a Tauri channel. */
 export type ChatStreamEvent =
   | { type: "user_message"; id: number; content: string; images: string[] }
+  | { type: "history"; messages: Message[] }
+  | { type: "started"; generation_id: number }
   | { type: "thinking"; text: string }
   | { type: "content"; text: string }
   | { type: "title_changed"; title: string }
