@@ -15,6 +15,7 @@ use tauri::State;
 
 use crate::agent::{adapter_for, AgentEvent, AgentRunner, Segment};
 use crate::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, ModelInfo};
+use crate::skills::{self, SkillStore};
 use crate::store::{AgentKind, Conversation, Message, Server, Settings, Skill, Store};
 use crate::AppState;
 
@@ -667,7 +668,7 @@ pub fn set_default_system_prompt(
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamEvent {
-    UserMessage { id: i64, content: String, images: Vec<String> },
+    UserMessage { id: i64, content: String, images: Vec<String>, skill_name: Option<String> },
     /// Canonical history after a store-side rewrite (edit truncation,
     /// regenerate removal) — the UI mirrors it wholesale.
     History { messages: Vec<Message> },
@@ -758,6 +759,25 @@ pub fn resolve_target(
     Ok((endpoint_of(&server), model, options))
 }
 
+/// Skills injection — the one mapping every server-model request goes
+/// through: the enabled set (capped by `SIZE_CAP_BYTES`) rides on every
+/// request, and a one-shot invoked skill joins it regardless of the toggle.
+/// An empty result leaves the prompt untouched.
+pub fn apply_skill_injection(
+    store: &Store,
+    skills: &SkillStore,
+    options: &mut ChatOptions,
+    skill_id: Option<i64>,
+) -> crate::skills::Result<()> {
+    let mut prompts = skills.enabled_prompts(store)?;
+    if let Some(id) = skill_id {
+        prompts.push(skills.skill_prompt(store, id)?);
+    }
+    let block = skills::prompt_block(&prompts);
+    options.system_prompt = skills::with_skill_block(options.system_prompt.take(), &block);
+    Ok(())
+}
+
 /// Sends a user message and streams the assistant reply over `channel`.
 ///
 /// Order of operations: persist the user message first (auto-titling from it
@@ -770,15 +790,37 @@ pub async fn send_message(
     conversation_id: i64,
     content: String,
     images: Vec<String>,
+    skill_id: Option<i64>,
     channel: Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
     // 1. Persist the user message first (auto-titling from it if this is the
     //    first one); the target itself is resolved by `stream_reply` from the
     //    persisted state (store lock held only here — never across the await).
+    //    An invoked skill's name lands on the message row as display metadata.
     let (user_message, title_changed) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+        let skill_name = match skill_id {
+            Some(id) => {
+                let skill = guard.get_skill(id).map_err(|e| e.to_string())?;
+                if !skill.enabled {
+                    return Err(format!(
+                        "skill “{}” is disabled — enable it in Settings → Skills first",
+                        skill.name
+                    ));
+                }
+                Some(skill.name)
+            }
+            None => None,
+        };
         let user_message = guard
-            .insert_message_full(conversation_id, "user", &content, None, &images)
+            .insert_message_full(
+                conversation_id,
+                "user",
+                &content,
+                None,
+                &images,
+                skill_name.as_deref(),
+            )
             .map_err(|e| e.to_string())?;
         let title_changed = guard
             .maybe_autotitle(conversation_id, &content)
@@ -791,6 +833,7 @@ pub async fn send_message(
         id: user_message.id,
         content: user_message.content.clone(),
         images: user_message.images.clone(),
+        skill_name: user_message.skill_name.clone(),
     });
     if title_changed {
         let title = {
@@ -800,22 +843,29 @@ pub async fn send_message(
         let _ = channel.send(ChatStreamEvent::TitleChanged { title });
     }
 
-    stream_reply(&state, conversation_id, &channel).await
+    stream_reply(&state, conversation_id, skill_id, &channel).await
 }
 
 /// Streams an assistant reply for the conversation's history as stored and
 /// persists it. Shared by send / regenerate / edit — all three converge on
 /// "history as stored → one streamed assistant message appended", so control
-/// actions reuse the exact same send/stream path.
+/// actions reuse the exact same send/stream path. Only an explicit send can
+/// carry a one-shot skill; control actions inject the enabled set alone.
 async fn stream_reply(
     state: &State<'_, AppState>,
     conversation_id: i64,
+    skill_id: Option<i64>,
     channel: &Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
-    // 1. Resolve the target from the (already persisted) state.
+    // 1. Resolve the target from the (already persisted) state, then merge
+    //    the skills block into the system prompt.
     let (endpoint, model, options) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
-        resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?
+        let (endpoint, model, mut options) =
+            resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?;
+        apply_skill_injection(&guard, &state.skills, &mut options, skill_id)
+            .map_err(|e| e.to_string())?;
+        (endpoint, model, options)
     };
 
     // 2. Build the request context from full history.
@@ -894,6 +944,7 @@ async fn stream_reply(
                 &outcome.content,
                 thinking,
                 &[],
+                None,
             )
             .map_err(|e| e.to_string())?
     };
@@ -921,11 +972,13 @@ pub async fn send_agent_message(
     conversation_id: i64,
     content: String,
     images: Vec<String>,
+    skill_id: Option<i64>,
     channel: Channel<ChatStreamEvent>,
 ) -> CmdResult<u64> {
     // 1. Resolve the brain and persist the prompt (store lock held only
-    //    here — never across the await).
-    let (kind, model, cwd, access, user_message, title_changed, history) = {
+    //    here — never across the await). The skills block (enabled set +
+    //    one-shot) is assembled here too, before the lock is dropped.
+    let (kind, model, cwd, access, user_message, title_changed, history, skills_block) = {
         let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
         let conversation = guard
             .get_conversation(conversation_id)
@@ -956,8 +1009,28 @@ pub async fn send_agent_message(
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."))
         };
+        let skill_name = match skill_id {
+            Some(id) => {
+                let skill = guard.get_skill(id).map_err(|e| e.to_string())?;
+                if !skill.enabled {
+                    return Err(format!(
+                        "skill “{}” is disabled — enable it in Settings → Skills first",
+                        skill.name
+                    ));
+                }
+                Some(skill.name)
+            }
+            None => None,
+        };
         let user_message = guard
-            .insert_message_full(conversation_id, "user", &content, None, &images)
+            .insert_message_full(
+                conversation_id,
+                "user",
+                &content,
+                None,
+                &images,
+                skill_name.as_deref(),
+            )
             .map_err(|e| e.to_string())?;
         let title_changed = guard
             .maybe_autotitle(conversation_id, &content)
@@ -969,13 +1042,39 @@ pub async fn send_agent_message(
             .list_messages(conversation_id)
             .map_err(|e| e.to_string())?;
         let model = conversation.model_id.clone();
-        (kind, model, cwd, access, user_message, title_changed, history)
+        // Enabled skills ride on every agent send; the one-shot joins them.
+        let skills_block = {
+            let mut prompts = state
+                .skills
+                .enabled_prompts(&guard)
+                .map_err(|e| e.to_string())?;
+            if let Some(id) = skill_id {
+                prompts.push(
+                    state
+                        .skills
+                        .skill_prompt(&guard, id)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            skills::prompt_block(&prompts)
+        };
+        (
+            kind,
+            model,
+            cwd,
+            access,
+            user_message,
+            title_changed,
+            history,
+            skills_block,
+        )
     };
 
     let _ = channel.send(ChatStreamEvent::UserMessage {
         id: user_message.id,
         content: user_message.content.clone(),
         images: user_message.images.clone(),
+        skill_name: user_message.skill_name.clone(),
     });
     if title_changed {
         let title = {
@@ -1002,6 +1101,9 @@ pub async fn send_agent_message(
         match kind {
             Some(kind) => {
                 let mut prompt = transcript_prompt(&history, &content);
+                if !skills_block.is_empty() {
+                    prompt = crate::agent::prompt_with_skills(&prompt, &skills_block);
+                }
                 // Two attachment channels: data URLs land in temp files, and
                 // paths pasted into the message text are picked up as-is.
                 let data_url_files = write_image_tempfiles(&images);
@@ -1063,6 +1165,7 @@ pub async fn send_agent_message(
                     &cwd,
                     &content,
                     &loop_images,
+                    skill_id,
                     &abort,
                     &channel,
                 )
@@ -1101,14 +1204,14 @@ pub async fn send_agent_message(
             match segment {
                 Segment::Text(text) => {
                     guard
-                        .insert_message_full(conversation_id, "assistant", text, None, &[])
+                        .insert_message_full(conversation_id, "assistant", text, None, &[], None)
                         .map_err(|e| e.to_string())?;
                 }
                 Segment::Activity { title, detail } => {
                     let payload =
                         serde_json::json!({ "title": title, "detail": detail }).to_string();
                     guard
-                        .insert_message_full(conversation_id, "tool", &payload, None, &[])
+                        .insert_message_full(conversation_id, "tool", &payload, None, &[], None)
                         .map_err(|e| e.to_string())?;
                 }
             }
@@ -1160,6 +1263,7 @@ async fn run_tool_loop(
     cwd: &Path,
     content: &str,
     images: &[String],
+    skill_id: Option<i64>,
     abort: &AbortFlag,
     channel: &Channel<ChatStreamEvent>,
 ) -> Result<Vec<Segment>, String> {
@@ -1167,7 +1271,11 @@ async fn run_tool_loop(
 
     let (endpoint, model, options) = {
         let guard = state.store.lock().map_err(|e| e.to_string())?;
-        resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?
+        let (endpoint, model, mut options) =
+            resolve_target(&guard, conversation_id).map_err(|e| e.to_string())?;
+        apply_skill_injection(&guard, &state.skills, &mut options, skill_id)
+            .map_err(|e| e.to_string())?;
+        (endpoint, model, options)
     };
 
     let mut messages: Vec<Value> = Vec::new();
@@ -1383,7 +1491,7 @@ pub async fn regenerate(
         }
         guard.touch_conversation(conversation_id).map_err(|e| e.to_string())?;
     }
-    stream_reply(&state, conversation_id, &channel).await
+    stream_reply(&state, conversation_id, None, &channel).await
 }
 
 /// Edits one of the user's own messages: rewrites its content, drops every
@@ -1420,7 +1528,7 @@ pub async fn edit_message(
         let messages = guard.list_messages(conversation_id).map_err(|e| e.to_string())?;
         let _ = channel.send(ChatStreamEvent::History { messages });
     }
-    stream_reply(&state, conversation_id, &channel).await
+    stream_reply(&state, conversation_id, None, &channel).await
 }
 
 /// Persists the per-conversation chat settings. An empty system prompt means

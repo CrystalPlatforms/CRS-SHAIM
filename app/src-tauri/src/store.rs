@@ -147,7 +147,9 @@ impl SkillKind {
 }
 
 /// One chat message. `images` holds data URLs (`data:image/...;base64,...`),
-/// serialized to the JSON column of the same name.
+/// serialized to the JSON column of the same name. `skill_name` records the
+/// skill invoked with `/` on a user message — display metadata only (the
+/// instructions themselves never enter the stored text).
 #[derive(Debug, Clone, Serialize)]
 pub struct Message {
     pub id: i64,
@@ -157,6 +159,7 @@ pub struct Message {
     pub thinking: Option<String>,
     pub images: Vec<String>,
     pub reaction: Option<String>,
+    pub skill_name: Option<String>,
     pub created_at: i64,
 }
 
@@ -184,7 +187,7 @@ pub struct SearchHit {
 const CONVERSATION_COLUMNS: &str =
     "id, title, server_id, model_id, mode, agent_kind, project_path, system_prompt, temperature, context_len, thinking, created_at, updated_at";
 const MESSAGE_COLUMNS: &str =
-    "id, conversation_id, role, content, thinking, images, reaction, created_at";
+    "id, conversation_id, role, content, thinking, images, reaction, skill_name, created_at";
 const SKILL_COLUMNS: &str =
     "id, name, description, kind, enabled, path, size_bytes, created_at";
 
@@ -222,6 +225,7 @@ CREATE TABLE IF NOT EXISTS messages (
     thinking        TEXT,
     images          TEXT NOT NULL DEFAULT '[]',
     reaction        TEXT,
+    skill_name      TEXT,
     created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -327,6 +331,14 @@ impl Store {
                 "ALTER TABLE settings ADD COLUMN default_system_prompt TEXT",
                 [],
             )?;
+        }
+        let message_columns: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('messages')")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if !message_columns.iter().any(|name| name == "skill_name") {
+            conn.execute("ALTER TABLE messages ADD COLUMN skill_name TEXT", [])?;
         }
         Ok(())
     }
@@ -685,8 +697,8 @@ impl Store {
 
     // ---- Messages ---------------------------------------------------------
 
-    /// Inserts a message with the full payload used by chat (thinking and
-    /// image attachments included).
+    /// Inserts a message with the full payload used by chat (thinking, image
+    /// attachments and the invoked-skill name included).
     pub fn insert_message_full(
         &self,
         conversation_id: i64,
@@ -694,16 +706,17 @@ impl Store {
         content: &str,
         thinking: Option<&str>,
         images: &[String],
+        skill_name: Option<&str>,
     ) -> Result<Message> {
         let images_json = serde_json::to_string(images)
             .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(e.into())))?;
         self.conn.query_row(
             &format!(
-                "INSERT INTO messages (conversation_id, role, content, thinking, images)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO messages (conversation_id, role, content, thinking, images, skill_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  RETURNING {MESSAGE_COLUMNS}"
             ),
-            rusqlite::params![conversation_id, role, content, thinking, images_json],
+            rusqlite::params![conversation_id, role, content, thinking, images_json, skill_name],
             row_to_message,
         )
         .map_err(StoreError::from)
@@ -716,7 +729,7 @@ impl Store {
         role: &str,
         content: &str,
     ) -> Result<i64> {
-        self.insert_message_full(conversation_id, role, content, None, &[])
+        self.insert_message_full(conversation_id, role, content, None, &[], None)
             .map(|m| m.id)
     }
 
@@ -838,8 +851,8 @@ impl Store {
         )?;
         let new_id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO messages (conversation_id, role, content, thinking, images, reaction, created_at)
-             SELECT ?1, role, content, thinking, images, reaction, created_at
+            "INSERT INTO messages (conversation_id, role, content, thinking, images, reaction, skill_name, created_at)
+             SELECT ?1, role, content, thinking, images, reaction, skill_name, created_at
              FROM messages
              WHERE conversation_id = ?2 AND id >= ?3
              ORDER BY id",
@@ -1012,7 +1025,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         thinking: row.get(4)?,
         images,
         reaction: row.get(6)?,
-        created_at: row.get(7)?,
+        skill_name: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 

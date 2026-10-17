@@ -145,6 +145,14 @@ fn augment_path(command: &mut Command) {
 
 pub struct AgentRunner;
 
+/// Skills handoff for agent CLIs — session-prompt injection. The block is
+/// prepended before the conversation transcript so the CLI reads the skills
+/// as standing instructions, then whatever the user asked. One mechanism for
+/// both CLIs: no project-folder writes, no per-CLI flags to drift.
+pub fn prompt_with_skills(prompt: &str, skills_block: &str) -> String {
+    format!("{}\n\n---\n\n{prompt}", skills_block.trim_end())
+}
+
 impl AgentRunner {
     /// Spawns the adapter's CLI headless in `cwd`, forwards every parsed
     /// event through `on_event`, and folds the whole stream into segments.

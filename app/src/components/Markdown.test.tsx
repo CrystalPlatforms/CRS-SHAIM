@@ -141,6 +141,7 @@ describe("MessageView", () => {
       thinking: THINKING,
       images: [],
       reaction: null,
+      skill_name: null,
       created_at: 0,
     };
     render(<MessageView message={message} />);
@@ -158,6 +159,7 @@ describe("MessageView", () => {
       thinking: null,
       images: [PNG_IMAGE, JPEG_IMAGE],
       reaction: null,
+      skill_name: null,
       created_at: 0,
     };
     render(<MessageView message={message} />);
@@ -177,6 +179,7 @@ describe("MessageView", () => {
       thinking: null,
       images: [],
       reaction: null,
+      skill_name: null,
       created_at: 0,
     };
     render(<MessageView message={message} />);

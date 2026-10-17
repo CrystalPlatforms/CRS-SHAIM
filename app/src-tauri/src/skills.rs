@@ -2,9 +2,9 @@
 //!
 //! Deep module: import, listing, toggle, content read/write, delete and
 //! size accounting all go through it; nothing else touches skill files.
-//! Shaim never executes skill scripts — it only stores them, making them
-//! available where the owner points them (per scope decision: server-model
-//! conversations only, never into Claude Code or Codex sessions).
+//! Shaim never executes skill scripts — it only stores them and hands the
+//! instruction text to the consumer at send time: the server-model system
+//! prompt and the agent CLI prompt (see [`SkillPrompt`]).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,9 +16,84 @@ use crate::store::{Skill, Store, StoreError};
 pub type Result<T> = std::result::Result<T, SkillError>;
 
 /// Total content budget for *enabled* skills. Passing it is the owner's cue
-/// to prune — the cap keeps server-model system prompts from bloating, and
-/// the Settings → Skills section surfaces the warning.
+/// to prune — the cap keeps request assembly from bloating system prompts,
+/// and the Settings → Skills section surfaces the warning.
 pub const SIZE_CAP_BYTES: i64 = 32 * 1024;
+
+/// One skill's instructions as request assembly consumes them: what a
+/// system prompt or an agent prompt receives (frontmatter stripped).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillPrompt {
+    pub name: String,
+    pub content: String,
+}
+
+impl SkillStore {
+    /// The enabled set, capped. Skills travel in listing order; one that
+    /// would push the running total past [`SIZE_CAP_BYTES`] is skipped (a
+    /// later smaller one can still fit). An unreadable library file skips
+    /// that one skill rather than failing the whole send.
+    pub fn enabled_prompts(&self, store: &Store) -> Result<Vec<SkillPrompt>> {
+        let mut prompts = Vec::new();
+        let mut total = 0i64;
+        for skill in store.list_skills()?.into_iter().filter(|s| s.enabled) {
+            if total + skill.size_bytes > SIZE_CAP_BYTES {
+                continue;
+            }
+            let Ok(content) = self.content(store, skill.id) else {
+                continue;
+            };
+            total += skill.size_bytes;
+            prompts.push(SkillPrompt {
+                name: skill.name,
+                content,
+            });
+        }
+        Ok(prompts)
+    }
+
+    /// One skill's instructions for a single-invocation attach. A DISABLED
+    /// skill is unavailable everywhere — the palette hides it and this
+    /// refuses it, so neither the user nor the assistant can reach it
+    /// (owner decision, 2026-10-17).
+    pub fn skill_prompt(&self, store: &Store, id: i64) -> Result<SkillPrompt> {
+        let skill = store.get_skill(id)?;
+        if !skill.enabled {
+            return Err(SkillError::DisabledSkill(skill.name));
+        }
+        Ok(SkillPrompt {
+            content: self.content(store, id)?,
+            name: skill.name,
+        })
+    }
+}
+
+/// Formats prompts into the block that rides in a system/agent prompt.
+/// Empty input yields an empty string — the caller then injects nothing.
+pub fn prompt_block(prompts: &[SkillPrompt]) -> String {
+    if prompts.is_empty() {
+        return String::new();
+    }
+    let mut block =
+        String::from("## Active skills\n\nFollow these instructions for this request:\n");
+    for prompt in prompts {
+        block.push_str(&format!("\n### {}\n\n{}\n", prompt.name, prompt.content.trim_end()));
+    }
+    block
+}
+
+/// Merges a skills block into an optional system prompt. An empty block
+/// leaves the prompt untouched; otherwise the skills come after whatever
+/// base prompt the user configured.
+pub fn with_skill_block(base: Option<String>, block: &str) -> Option<String> {
+    if block.is_empty() {
+        return base;
+    }
+    Some(match base {
+        Some(base) if !base.trim().is_empty() => format!("{}\n\n{}", base.trim_end(), block),
+        _ => block.to_string(),
+    })
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
@@ -28,6 +103,8 @@ pub enum SkillError {
     DuplicateName(String),
     #[error("skill name cannot be empty")]
     EmptyName,
+    #[error("skill “{0}” is disabled — enable it in Settings → Skills first")]
+    DisabledSkill(String),
     #[error("unsupported skill file: {0} — import a .skill package or a .md file")]
     UnsupportedExtension(String),
     #[error("unreadable archive: {0}")]

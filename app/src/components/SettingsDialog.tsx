@@ -435,6 +435,9 @@ function SkillsTab({ open }: { open: boolean }) {
   const loadSkills = useCallback(async () => {
     try {
       setSkills(await invoke<StoredSkill[]>("list_skills"));
+      // The composer's "/" palette mirrors this library — tell it to reload
+      // (the event fires after every mutation path, all of which reload).
+      window.dispatchEvent(new Event("shaim:skills-changed"));
     } catch (error) {
       console.error("Failed to load skills:", error);
     }

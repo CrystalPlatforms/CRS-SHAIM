@@ -15,8 +15,8 @@
 //! - The size cap (32 KiB) applies to the SUM of *enabled* skill content
 //!   bodies — frontmatter is metadata, not injected content.
 //!
-//! Not covered in this iteration: injection into requests (S3), the slash
-//! palette (S4), the Settings UI itself (component level).
+//! Injection into requests lives in `tests/skills_injection.rs` (S3/S4); the
+//! Settings UI itself stays at component level.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -354,6 +354,113 @@ async fn stop_terminates_the_spawned_process() {
     );
 }
 
+// ---- Skills handoff (issue #19) ---------------------------------------------
+
+/// Records the exact prompt the runner hands to `build_command` — the same
+/// handoff a real CLI receives — and exits immediately.
+struct PromptSpy {
+    captured: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl AgentAdapter for PromptSpy {
+    fn label(&self) -> &'static str {
+        "PromptSpy"
+    }
+
+    fn binary(&self) -> &'static str {
+        "sh"
+    }
+
+    fn install_hint(&self) -> &'static str {
+        ""
+    }
+
+    fn build_command(
+        &self,
+        _cwd: &Path,
+        prompt: &str,
+        _access: AgentAccess,
+        _model: Option<&str>,
+        _images: &[PathBuf],
+    ) -> tokio::process::Command {
+        *self
+            .captured
+            .lock()
+            .expect("spy lock") = prompt.to_string();
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg("true");
+        command
+    }
+
+    fn parse_line(&mut self, _line: &str) -> Vec<AgentEvent> {
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
+    use shaim_lib::skills::{prompt_block, SkillStore};
+    use shaim_lib::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "shaim-agent-skills-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
+    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
+
+    // The composition send_agent_message performs: the enabled block (plus a
+    // one-shot, none here) prepended to the prompt the CLI receives.
+    let import = |name: &str, body: &str| {
+        let source = dir.join(format!("{name}.md"));
+        std::fs::write(&source, format!("---\nname: {name}\n---\n\n{body}"))
+            .expect("fixture should write");
+        skills.import(&store, &source).expect("import should succeed").id
+    };
+    let enabled = import("formatter", "Format every output as a table.");
+    let disabled = import("censor", "Never mention the deadline.");
+    skills.set_enabled(&store, enabled, true).expect("enable");
+    skills.set_enabled(&store, disabled, false).expect("disable");
+
+    let block = prompt_block(&skills.enabled_prompts(&store).expect("prompts"));
+    let prompt = shaim_lib::agent::prompt_with_skills("Fix the failing test.", &block);
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let mut adapter = PromptSpy {
+        captured: captured.clone(),
+    };
+    AgentRunner::run(
+        &mut adapter,
+        &scratch_dir(),
+        &prompt,
+        AgentAccess::ReadOnly,
+        None,
+        &[],
+        &AbortFlag::new(),
+        |_event| {},
+    )
+    .await
+    .expect("spy run should complete");
+
+    let handed_off = captured.lock().expect("spy lock").clone();
+    assert!(
+        handed_off.contains("## Active skills")
+            && handed_off.contains("### formatter")
+            && handed_off.contains("Format every output as a table."),
+        "enabled skills ride in the prompt the adapter hands to the CLI"
+    );
+    assert!(
+        !handed_off.contains("deadline"),
+        "disabled skills never reach the handoff"
+    );
+    assert!(
+        handed_off.ends_with("Fix the failing test."),
+        "the user's message stays last, after the skills block"
+    );
+}
+
 #[tokio::test]
 async fn missing_binary_returns_a_structured_error() {
     let mut adapter = MissingAdapter;

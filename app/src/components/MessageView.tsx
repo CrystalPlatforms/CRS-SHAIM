@@ -104,6 +104,16 @@ export function MessageView({
         <div className="flex max-w-[85%] items-end gap-1">
           {controls}
           <div className="rounded-xl bg-primary px-3.5 py-2 text-primary-foreground">
+            {message.skill_name && (
+              <p className="mb-1 flex justify-end">
+                <span
+                  title="Skill invoked with this message"
+                  className="inline-flex items-center rounded-[4px] border border-primary-foreground/30 bg-primary-foreground/10 px-1.5 py-0.5 font-mono text-[11px] text-primary-foreground/80"
+                >
+                  /{message.skill_name}
+                </span>
+              </p>
+            )}
             <p className="whitespace-pre-wrap text-sm">{message.content}</p>
             {message.images.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">

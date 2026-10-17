@@ -40,6 +40,8 @@ export interface Message {
   thinking: string | null;
   images: string[];
   reaction: string | null;
+  /** Skill invoked with `/` on this message — display metadata only. */
+  skill_name: string | null;
   created_at: number;
 }
 
@@ -61,7 +63,13 @@ export interface SearchHit {
 
 /** Events streamed from the chat commands over a Tauri channel. */
 export type ChatStreamEvent =
-  | { type: "user_message"; id: number; content: string; images: string[] }
+  | {
+      type: "user_message";
+      id: number;
+      content: string;
+      images: string[];
+      skill_name: string | null;
+    }
   | { type: "history"; messages: Message[] }
   | { type: "started"; generation_id: number }
   | { type: "thinking"; text: string }
@@ -152,8 +160,9 @@ export interface SkillInfo {
   description: string;
 }
 
-/** One skill in Shaim's own library, as shown in Settings → Skills. Used in
- * server-model conversations only — never handed to Claude Code or Codex. */
+/** One skill in Shaim's own library, as shown in Settings → Skills. Enabled
+ * skills ride in request assembly; any skill can be invoked one-shot from
+ * the composer's "/" palette. */
 export interface StoredSkill {
   id: number;
   name: string;

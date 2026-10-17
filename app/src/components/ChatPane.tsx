@@ -22,6 +22,7 @@ import type {
   ModelInfo,
   Server,
   SkillInfo,
+  StoredSkill,
   StreamSegment,
 } from "@/types";
 import { AGENT_COMMANDS, isReasoningTitle } from "@/types";
@@ -37,6 +38,7 @@ import {
 import { MessageView, PendingImages } from "@/components/MessageView";
 import { AgentLoader } from "@/components/AgentLoader";
 import { ActivityBlock } from "@/components/ActivityBlock";
+import { paletteSelection, skillRows } from "@/lib/skillPalette";
 import { cn } from "@/lib/utils";
 
 interface ChatPaneProps {
@@ -127,11 +129,14 @@ interface AskButton {
   text: string;
 }
 
-/** One row of the composer suggestion palette. */
+/** One row of the composer suggestion palette. `skillId` marks a one-shot
+ * Shaim library skill — picking it attaches the skill to the next send
+ * instead of inserting text (those rows carry no insert text). */
 interface SuggestionItem {
   label: string;
   hint?: string;
-  insert: string;
+  insert?: string;
+  skillId?: number;
 }
 
 /** Open palette state: what kind, the trigger token length (the query plus
@@ -214,6 +219,22 @@ function buildAskChip(key: number, snippet: string): HTMLElement {
   return chip;
 }
 
+/** Builds the inline one-shot skill chip: the skill's name in terminal
+ * (monospace) font inside a small rectangle. Display only — the skill's
+ * CONTENT travels through the backend injection, never through the message
+ * text. Lives inside the composer as a non-editable element; draggable like
+ * an ask chip, click asks for removal. */
+function buildSkillChip(name: string): HTMLElement {
+  const chip = document.createElement("span");
+  chip.setAttribute("data-skill-chip", name);
+  chip.setAttribute("contenteditable", "false");
+  chip.setAttribute("title", "Drag to move · click to remove");
+  chip.className =
+    "mr-0.5 inline-flex cursor-pointer select-none items-center rounded-[4px] border border-primary/40 bg-primary/10 px-1.5 py-0.5 align-middle font-mono text-xs text-foreground";
+  chip.textContent = `/${name}`;
+  return chip;
+}
+
 /** Typed text of the composer: chip contents are excluded (they are
  * context, not message text), BR/DIV boundaries become newlines. */
 function composerText(el: HTMLElement): string {
@@ -226,6 +247,7 @@ function composerText(el: HTMLElement): string {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as HTMLElement;
     if (element.hasAttribute("data-ask-chip")) return;
+    if (element.hasAttribute("data-skill-chip")) return;
     if (element.tagName === "BR") {
       out += "\n";
       return;
@@ -255,6 +277,7 @@ function composerMessage(
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as HTMLElement;
+    if (element.hasAttribute("data-skill-chip")) return;
     if (element.hasAttribute("data-ask-chip")) {
       const quote = quoteFor(Number(element.getAttribute("data-ask-chip")));
       if (quote) {
@@ -378,6 +401,9 @@ export function ChatPane({
   const [deleting, setDeleting] = useState<Message | null>(null);
   /** A chip the user clicked — waiting for removal confirmation. */
   const [removingAsk, setRemovingAsk] = useState<{ key: number; snippet: string } | null>(null);
+  /** A skill chip the user clicked — waiting for removal confirmation
+   * (holds the skill's name; only one chip can exist at a time). */
+  const [removingSkill, setRemovingSkill] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -389,6 +415,13 @@ export function ChatPane({
   >(null);
   /** Skills installed for the conversation's CLI brain. */
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  /** Shaim's own skill library — the "/" palette lists it in every mode. */
+  const [librarySkills, setLibrarySkills] = useState<StoredSkill[]>([]);
+  /** Skill invoked from the palette: attaches ONE-SHOT to the next send,
+   * independent of the skill's global enable toggle. */
+  const [invokedSkill, setInvokedSkill] = useState<{ id: number; name: string } | null>(
+    null,
+  );
 
   const generationRef = useRef<number | null>(null);
   /** Guards stale '@' file queries — only the newest detection wins. */
@@ -397,29 +430,53 @@ export function ChatPane({
   const isCliBrain = conversation?.agent_kind != null;
 
   // Skills of the current brain — the "/" palette merges them in, "$"
-  // shows them alone.
+  // shows them alone. The Shaim library rides in every mode; switching
+  // conversations drops a pending one-shot attach.
   useEffect(() => {
+    setInvokedSkill(null);
     const kind = conversation?.agent_kind;
     if (!kind) {
       setSkills([]);
-      return;
+    } else {
+      let cancelled = false;
+      invoke<SkillInfo[]>("list_agent_skills", { agentKind: kind })
+        .then((loaded) => {
+          if (!cancelled) setSkills(loaded);
+        })
+        .catch(() => {
+          if (!cancelled) setSkills([]);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
+  }, [conversation?.id, conversation?.agent_kind]);
+  useEffect(() => {
     let cancelled = false;
-    invoke<SkillInfo[]>("list_agent_skills", { agentKind: kind })
-      .then((loaded) => {
-        if (!cancelled) setSkills(loaded);
-      })
-      .catch(() => {
-        if (!cancelled) setSkills([]);
-      });
+    const reload = () => {
+      invoke<StoredSkill[]>("list_skills")
+        .then((loaded) => {
+          if (!cancelled) setLibrarySkills(loaded);
+        })
+        .catch(() => {
+          if (!cancelled) setLibrarySkills([]);
+        });
+    };
+    reload();
+    // Settings → Skills broadcasts after every change (toggle, import,
+    // edit, delete) so the palette never offers a stale set.
+    window.addEventListener("shaim:skills-changed", reload);
     return () => {
       cancelled = true;
+      window.removeEventListener("shaim:skills-changed", reload);
     };
-  }, [conversation?.id, conversation?.agent_kind]);
+  }, [conversation?.id]);
   const bufferRef = useRef<StreamState>({ thinking: "", segments: [] });
   const streamingRef = useRef(false);
   /** The composer is a contentEditable — plain text + inline ask chips. */
   const composerRef = useRef<HTMLDivElement>(null);
+  /** Scrollable palette dropdown — arrow keys keep the selection in view. */
+  const paletteRef = useRef<HTMLDivElement>(null);
   /** Typed text stashed while the user edits an older message. */
   const draftStashRef = useRef("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -605,6 +662,7 @@ export function ChatPane({
                 thinking: null,
                 images: event.images,
                 reaction: null,
+                skill_name: event.skill_name,
                 created_at: Math.floor(Date.now() / 1000),
               },
             ]);
@@ -673,6 +731,7 @@ export function ChatPane({
                 thinking: event.thinking.length > 0 ? event.thinking : null,
                 images: [],
                 reaction: null,
+                skill_name: null,
                 created_at: Math.floor(Date.now() / 1000),
               },
             ]);
@@ -735,11 +794,13 @@ export function ChatPane({
     return pre.toString();
   }, []);
 
-  /** Opens the "/" command or "@" file palette from the token under the
-   * caret; Agent mode only. Files resolve from the project folder with a
-   * short debounce — the newest query always wins. */
+  /** Opens the "/" palette (Shaim library skills in EVERY mode, plus the
+   * CLI's built-in commands and installed skills where a CLI brain is set),
+   * or the "@" file palette (Agent mode only) from the token under the
+   * caret. Files resolve from the project folder with a short debounce —
+   * the newest query always wins. */
   const detectSuggestion = useCallback(() => {
-    if (!conversation || conversation.agent_kind == null) {
+    if (!conversation) {
       setSuggestions(null);
       return;
     }
@@ -787,31 +848,38 @@ export function ChatPane({
       }, 150);
       return;
     }
-    // "/" offers the CLI's built-ins plus installed skills; "$" is skills
-    // alone — both insert the command text for the CLI to run.
-    const commandRows = (
-      match[2] === "/" ? AGENT_COMMANDS[conversation.agent_kind] : []
-    )
+    if (match[2] === "$" && conversation.agent_kind == null) {
+      setSuggestions(null);
+      return;
+    }
+    const agentKind = conversation.agent_kind;
+    // CLI rows (commands + the CLI's own installed skills) insert text for
+    // the CLI to run; the Shaim library rows attach one-shot instead.
+    const commandRows = (agentKind != null && match[2] === "/" ? AGENT_COMMANDS[agentKind] : [])
       .filter((entry) => query.length === 0 || contains(entry.cmd) || contains(entry.hint))
       .map((entry) => ({
         label: entry.cmd,
         hint: entry.hint,
         insert: `${entry.cmd} `,
       }));
-    const skillRows = skills
-      .filter((skill) => query.length === 0 || contains(skill.name) || contains(skill.description))
-      .map((skill) => ({
-        label: `/${skill.name}`,
-        hint: skill.description,
-        insert: `/${skill.name} `,
-      }));
-    const items = [...commandRows, ...skillRows];
+    const cliSkillRows =
+      agentKind != null
+        ? skills
+          .filter((skill) => query.length === 0 || contains(skill.name) || contains(skill.description))
+          .map((skill) => ({
+            label: `/${skill.name}`,
+            hint: skill.description,
+            insert: `/${skill.name} `,
+          }))
+      : [];
+    const libraryRows = match[2] === "/" ? skillRows(librarySkills, query) : [];
+    const items: SuggestionItem[] = [...commandRows, ...cliSkillRows, ...libraryRows];
     setSuggestions(
       items.length > 0
         ? { kind: "command", tokenLength, items, selected: 0 }
         : null,
     );
-  }, [conversation, skills, textBeforeCaret]);
+  }, [conversation, skills, librarySkills, textBeforeCaret]);
 
   /** Replaces the trigger token with the picked row and parks the caret
    * after the inserted text. */
@@ -837,7 +905,22 @@ export function ChatPane({
       }
       const range = sel.getRangeAt(0);
       range.deleteContents();
-      const inserted = document.createTextNode(item.insert);
+      if (item.skillId != null) {
+        // One-shot library skill: the token becomes an inline terminal-font
+        // chip at the caret. The name never joins the message text — the
+        // backend injects the skill's content into the request itself.
+        const name = item.label.replace(/^\//, "");
+        el.querySelectorAll("[data-skill-chip]").forEach((chip) => chip.remove());
+        const chip = buildSkillChip(name);
+        range.insertNode(chip);
+        placeCaretAfterChip(chip);
+        setInvokedSkill({ id: item.skillId, name });
+        setDraft(composerText(el));
+        setSuggestions(null);
+        el.focus();
+        return;
+      }
+      const inserted = document.createTextNode(item.insert ?? "");
       range.insertNode(inserted);
       range.setStartAfter(inserted);
       range.collapse(true);
@@ -851,14 +934,14 @@ export function ChatPane({
   );
 
   /**
-   * Pointer-driven chip dragging — HTML5 drag&drop never fires a usable
-   * drop inside a contentEditable in WebKit. The chip follows the pointer
-   * as a ghost, a green marker shows exactly where the chip would land;
-   * on release it moves to the caret position under the cursor. A release
-   * without movement stays a plain click (which opens the removal dialog
-   * via the click handler).
+   * Pointer-driven chip dragging (ask chips AND skill chips) — HTML5
+   * drag&drop never fires a usable drop inside a contentEditable in WebKit.
+   * The chip follows the pointer as a ghost, a green marker shows exactly
+   * where the chip would land; on release it moves to the caret position
+   * under the cursor. A release without movement stays a plain click (which
+   * opens the removal dialog via the click handler).
    */
-  const beginAskDrag = useCallback(
+  const beginChipDrag = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, chip: HTMLElement) => {
       if (event.button !== 0) return;
       const rect = chip.getBoundingClientRect();
@@ -956,6 +1039,16 @@ export function ChatPane({
     setRemovingAsk(null);
   }, [removingAsk]);
 
+  const confirmRemoveSkill = useCallback(() => {
+    setRemovingSkill(null);
+    const el = composerRef.current;
+    if (!el) return;
+    // Only one skill chip can exist — drop it and the one-shot attach.
+    el.querySelector("[data-skill-chip]")?.remove();
+    setInvokedSkill(null);
+    setDraft(composerText(el));
+  }, []);
+
   const send = useCallback(() => {
     if (!conversation) return;
     if (conversation.mode === "agent" && !conversation.project_path) return;
@@ -973,26 +1066,31 @@ export function ChatPane({
     const sentText =
       replying && body.length > 0 ? `${replying.quote}\n\n${body}` : body;
     const sentImages = pendingImages;
+    const invokedSkillId = invokedSkill?.id;
     setDraft("");
     setPendingImages([]);
     clearAsks();
     setReplying(null);
+    setInvokedSkill(null);
     setSuggestions(null);
     if (composerRef.current) composerRef.current.textContent = "";
     // Route by brain: server models in Natural chat through the gateway;
     // CLI brains and Agent mode (any brain) go through the agent pipeline.
+    // An invoked skill is one-shot: it rides on exactly this send.
     if (conversation.mode === "agent" || conversation.agent_kind != null) {
       runCommand(conversation.id, "send_agent_message", {
         content: sentText,
         images: sentImages,
+        skillId: invokedSkillId,
       });
     } else {
       runCommand(conversation.id, "send_message", {
         content: sentText,
         images: sentImages,
+        skillId: invokedSkillId,
       });
     }
-  }, [conversation, draft, pendingImages, asks, replying, clearAsks, runCommand]);
+  }, [conversation, draft, pendingImages, asks, replying, invokedSkill, clearAsks, runCommand]);
 
   /** Composer toolbar: Natural ↔ Agent, immediately — the folder, if
    * missing, is picked right where the folder button is. */
@@ -1036,6 +1134,7 @@ export function ChatPane({
     }
     setReplying(null);
     setAsks([]);
+    setInvokedSkill(null);
     setEditing({ id: message.id, content: message.content });
     setDraft(message.content);
   }, []);
@@ -1156,6 +1255,10 @@ export function ChatPane({
       ),
     );
     setAsks((current) => current.filter((ask) => domKeys.has(ask.key)));
+    // A skill chip deleted with Backspace detaches the one-shot skill.
+    setInvokedSkill((current) =>
+      el.querySelector("[data-skill-chip]") != null ? current : null,
+    );
   }, []);
 
   // Flush loop while streaming — keeps renders batched, typing responsive.
@@ -1164,6 +1267,24 @@ export function ChatPane({
     const timer = window.setInterval(flushBuffer, FLUSH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [stream !== null, flushBuffer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Arrow keys move the palette selection — scroll it into view when it
+  // leaves the dropdown's visible slice (mouse users scroll themselves).
+  useEffect(() => {
+    if (!suggestions) return;
+    const container = paletteRef.current;
+    const selected = container?.querySelector<HTMLElement>(
+      '[data-selected="true"]',
+    );
+    if (!container || !selected) return;
+    const top = selected.offsetTop;
+    const bottom = top + selected.offsetHeight;
+    if (top < container.scrollTop) {
+      container.scrollTop = top;
+    } else if (bottom > container.scrollTop + container.clientHeight) {
+      container.scrollTop = bottom - container.clientHeight;
+    }
+  }, [suggestions]);
 
   // Jump-to-message (from search): once the target conversation's thread is
   // on screen, scroll it into view and flash a highlight.
@@ -1474,13 +1595,17 @@ export function ChatPane({
               </label>
             ))}
           <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card">
-            {/* Slash-command / @-file palette (Agent mode) */}
+            {/* Slash-command / @-file palette (every mode) */}
             {suggestions && suggestions.items.length > 0 && (
-              <div className="absolute bottom-full left-0 z-50 mb-1 max-h-52 w-full min-w-[280px] overflow-y-auto rounded-lg border border-border bg-popover shadow-md">
+              <div
+                ref={paletteRef}
+                className="absolute bottom-full left-0 z-50 mb-1 max-h-52 w-full min-w-[280px] overflow-y-auto rounded-lg border border-border bg-popover shadow-md"
+              >
                 {suggestions.items.map((item, index) => (
                   <button
                     key={item.label}
                     type="button"
+                    data-selected={index === suggestions.selected}
                     // Keep the caret in the composer for the insert.
                     onMouseDown={(e) => {
                       e.preventDefault();
@@ -1518,7 +1643,7 @@ export function ChatPane({
               />
             )}
             <div className="relative px-2 pt-1">
-              {draft.length === 0 && asks.length === 0 && (
+              {draft.length === 0 && asks.length === 0 && !invokedSkill && (
                 <span className="pointer-events-none absolute left-3 top-3 text-sm text-muted-foreground">
                   {editing
                     ? "Edit your message…"
@@ -1538,20 +1663,30 @@ export function ChatPane({
                   detectSuggestion();
                 }}
                 onPointerDown={(event) => {
-                  // Grabbing a chip starts the pointer drag; preventDefault
-                  // keeps the editable from also starting a text selection.
+                  // Grabbing a chip (skill or ask) starts the pointer drag;
+                  // preventDefault keeps the editable from also starting a
+                  // text selection.
                   const chip = (event.target as HTMLElement).closest(
-                    "[data-ask-chip]",
+                    "[data-ask-chip], [data-skill-chip]",
                   );
                   if (!chip || !composerRef.current?.contains(chip)) return;
                   event.preventDefault();
-                  beginAskDrag(event, chip as HTMLElement);
+                  beginChipDrag(event, chip as HTMLElement);
                 }}
                 onClick={(event) => {
-                  // Clicking an ask chip opens the removal confirmation —
-                  // unless the pointer just finished a drag.
+                  // A pointer that just finished a drag must not open any
+                  // removal dialog.
                   if (suppressChipClickRef.current) {
                     suppressChipClickRef.current = false;
+                    return;
+                  }
+                  // Clicking a skill chip asks for confirmation first —
+                  // same ritual as the ask chips.
+                  const skillChip = (event.target as HTMLElement).closest(
+                    "[data-skill-chip]",
+                  );
+                  if (skillChip && composerRef.current?.contains(skillChip)) {
+                    setRemovingSkill(skillChip.getAttribute("data-skill-chip"));
                     return;
                   }
                   const chip = (event.target as HTMLElement).closest(
@@ -1569,20 +1704,19 @@ export function ChatPane({
                   // The suggestion palette eats navigation keys first.
                   if (suggestions && suggestions.items.length > 0) {
                     const count = suggestions.items.length;
-                    if (event.key === "ArrowDown") {
+                    if (
+                      event.key === "ArrowDown" ||
+                      event.key === "ArrowUp"
+                    ) {
                       event.preventDefault();
-                      setSuggestions({
-                        ...suggestions,
-                        selected: (suggestions.selected + 1) % count,
-                      });
-                      return;
-                    }
-                    if (event.key === "ArrowUp") {
-                      event.preventDefault();
-                      setSuggestions({
-                        ...suggestions,
-                        selected: (suggestions.selected - 1 + count) % count,
-                      });
+                      const selected = paletteSelection(
+                        event.key,
+                        suggestions.selected,
+                        count,
+                      );
+                      if (selected != null) {
+                        setSuggestions({ ...suggestions, selected });
+                      }
                       return;
                     }
                     if (
@@ -1592,7 +1726,7 @@ export function ChatPane({
                       event.preventDefault();
                       applySuggestion(
                         suggestions,
-                        suggestions.items[suggestions.selected],
+                        suggestions.items[paletteSelection(event.key, suggestions.selected, count) ?? suggestions.selected],
                       );
                       return;
                     }
@@ -1820,6 +1954,31 @@ export function ChatPane({
               Cancel
             </Button>
             <Button variant="destructive" onClick={confirmRemoveAsk}>
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Skill-chip removal confirmation */}
+      <Dialog
+        open={removingSkill !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemovingSkill(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove skill?</DialogTitle>
+            <DialogDescription>
+              /{removingSkill} will no longer travel with your next message.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingSkill(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmRemoveSkill}>
               Remove
             </Button>
           </DialogFooter>

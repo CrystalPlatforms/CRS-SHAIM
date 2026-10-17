@@ -303,6 +303,7 @@ fn messages_round_trip_with_thinking_and_images() {
             "Here is what I see.",
             Some("The user attached two images; I looked at both."),
             &images,
+            None,
         )
         .unwrap();
 
@@ -324,7 +325,7 @@ fn messages_round_trip_with_thinking_and_images() {
 
     // Partial content (an aborted stream) persists like any other message.
     let partial = store
-        .insert_message_full(conversation.id, "assistant", "partial answ", None, &[])
+        .insert_message_full(conversation.id, "assistant", "partial answ", None, &[], None)
         .unwrap();
     let loaded = store.list_messages(conversation.id).unwrap();
     assert_eq!(loaded.len(), 2);
