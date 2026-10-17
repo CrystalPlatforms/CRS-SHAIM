@@ -106,6 +106,46 @@ pub struct Server {
     pub api_key: Option<String>,
 }
 
+/// Storage shape of an imported skill: `.skill` packages are unzipped
+/// folders, markdown skills are single files. Shaim never executes skill
+/// scripts — it stores the files and this metadata row.
+#[derive(Debug, Clone, Serialize)]
+pub struct Skill {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub path: String,
+    pub size_bytes: i64,
+    pub created_at: i64,
+}
+
+/// Kind of an imported skill. Stored as `TEXT` in the schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillKind {
+    Package,
+    Markdown,
+}
+
+impl SkillKind {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "package" => Ok(Self::Package),
+            "markdown" => Ok(Self::Markdown),
+            other => Err(StoreError::UnknownKind(other.to_string())),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Package => "package",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
 /// One chat message. `images` holds data URLs (`data:image/...;base64,...`),
 /// serialized to the JSON column of the same name.
 #[derive(Debug, Clone, Serialize)]
@@ -145,6 +185,8 @@ const CONVERSATION_COLUMNS: &str =
     "id, title, server_id, model_id, mode, agent_kind, project_path, system_prompt, temperature, context_len, thinking, created_at, updated_at";
 const MESSAGE_COLUMNS: &str =
     "id, conversation_id, role, content, thinking, images, reaction, created_at";
+const SKILL_COLUMNS: &str =
+    "id, name, description, kind, enabled, path, size_bytes, created_at";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -188,6 +230,17 @@ CREATE TABLE IF NOT EXISTS settings (
     default_server_id     INTEGER REFERENCES servers(id) ON DELETE SET NULL,
     default_model_id      TEXT,
     default_system_prompt TEXT
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL CHECK (kind IN ('package', 'markdown')),
+    enabled     INTEGER NOT NULL DEFAULT 0,
+    path        TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -532,6 +585,104 @@ impl Store {
         Ok(())
     }
 
+    // ---- Skills -------------------------------------------------------------
+
+    /// Creates a skill metadata row (library files are the SkillStore's job).
+    /// `enabled` starts at 0 — schema default; skills ship disabled.
+    pub fn create_skill(
+        &self,
+        name: &str,
+        description: &str,
+        kind: &str,
+        path: &Path,
+        size_bytes: i64,
+    ) -> Result<Skill> {
+        SkillKind::parse(kind)?;
+        self.conn
+            .query_row(
+                &format!(
+                    "INSERT INTO skills (name, description, kind, path, size_bytes)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     RETURNING {SKILL_COLUMNS}"
+                ),
+                rusqlite::params![name, description, kind, path.to_string_lossy(), size_bytes],
+                row_to_skill,
+            )
+            .map_err(StoreError::from)
+    }
+
+    pub fn list_skills(&self) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SKILL_COLUMNS} FROM skills ORDER BY name COLLATE NOCASE"
+        ))?;
+        let rows = stmt.query_map([], row_to_skill)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn get_skill(&self, id: i64) -> Result<Skill> {
+        self.conn
+            .query_row(
+                &format!("SELECT {SKILL_COLUMNS} FROM skills WHERE id = ?1"),
+                [id],
+                row_to_skill,
+            )
+            .map_err(StoreError::from)
+    }
+
+    pub fn set_skill_enabled(&self, id: i64, enabled: bool) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE skills SET enabled = ?1 WHERE id = ?2",
+            rusqlite::params![enabled, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Re-accounts content size after an edit.
+    pub fn update_skill_size(&self, id: i64, size_bytes: i64) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE skills SET size_bytes = ?1 WHERE id = ?2",
+            rusqlite::params![size_bytes, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: i64) -> Result<()> {
+        let changed = self.conn.execute("DELETE FROM skills WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    pub fn rename_skill(&self, id: i64, name: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE skills SET name = ?1 WHERE id = ?2",
+            rusqlite::params![name, id],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// Sum of content sizes across enabled skills (0 when none).
+    pub fn enabled_skill_size(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM skills WHERE enabled = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     // ---- Messages ---------------------------------------------------------
 
     /// Inserts a message with the full payload used by chat (thinking and
@@ -834,6 +985,19 @@ fn row_to_server(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
         kind: row.get(2)?,
         base_url: row.get(3)?,
         api_key: row.get(4)?,
+    })
+}
+
+fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
+    Ok(Skill {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        kind: row.get(3)?,
+        enabled: row.get::<_, i64>(4)? != 0,
+        path: row.get(5)?,
+        size_bytes: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 

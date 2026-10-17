@@ -151,3 +151,16 @@ export interface SkillInfo {
   name: string;
   description: string;
 }
+
+/** One skill in Shaim's own library, as shown in Settings → Skills. Used in
+ * server-model conversations only — never handed to Claude Code or Codex. */
+export interface StoredSkill {
+  id: number;
+  name: string;
+  description: string;
+  kind: "package" | "markdown";
+  enabled: boolean;
+  path: string;
+  size_bytes: number;
+  created_at: number;
+}

@@ -15,7 +15,7 @@ use tauri::State;
 
 use crate::agent::{adapter_for, AgentEvent, AgentRunner, Segment};
 use crate::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, ModelInfo};
-use crate::store::{AgentKind, Conversation, Message, Server, Settings, Store};
+use crate::store::{AgentKind, Conversation, Message, Server, Settings, Skill, Store};
 use crate::AppState;
 
 type CmdResult<T> = Result<T, String>;
@@ -567,6 +567,61 @@ fn shorten_text(text: &str, max: usize) -> String {
         let cut: String = text.chars().take(max).collect();
         format!("{cut}…")
     }
+}
+
+// ---- Shaim skill library ------------------------------------------------------
+//
+// The SkillStore owns the library files; these are one-to-one adapters.
+// Scope: Shaim skills reach server-model conversations only — nothing here is
+// ever handed to Claude Code or Codex.
+
+#[tauri::command]
+pub fn import_skill(state: State<'_, AppState>, path: String) -> CmdResult<Skill> {
+    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+    state
+        .skills
+        .import(&guard, Path::new(&path))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_skills(state: State<'_, AppState>) -> CmdResult<Vec<Skill>> {
+    with_store(&state, |store| store.list_skills())
+}
+
+#[tauri::command]
+pub fn set_skill_enabled(state: State<'_, AppState>, id: i64, enabled: bool) -> CmdResult<()> {
+    with_store(&state, |store| store.set_skill_enabled(id, enabled))
+}
+
+#[tauri::command]
+pub fn get_skill_content(state: State<'_, AppState>, id: i64) -> CmdResult<String> {
+    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+    state.skills.content(&guard, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_skill_content(state: State<'_, AppState>, id: i64, body: String) -> CmdResult<()> {
+    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+    state
+        .skills
+        .save_content(&guard, id, &body)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_skill(state: State<'_, AppState>, id: i64, name: String) -> CmdResult<()> {
+    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+    state
+        .skills
+        .rename(&guard, id, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_skill(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+    state.skills.delete(&guard, id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

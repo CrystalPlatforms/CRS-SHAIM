@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, Pencil, PlugZap, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Loader2, Pencil, PlugZap, Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
 
-import type { AppSettings, ModelInfo, Server, ServerKind } from "@/types";
+import type { AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
+import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,7 +24,7 @@ interface SettingsDialogProps {
   onServersChanged: () => void;
 }
 
-type Tab = "servers" | "system" | "defaults" | "about";
+type Tab = "servers" | "skills" | "system" | "defaults" | "about";
 
 interface ServerStatus {
   state: "unknown" | "checking" | "online" | "offline";
@@ -46,6 +48,7 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
           {(
             [
               ["servers", "Servers"],
+              ["skills", "Skills"],
               ["system", "System prompt"],
               ["defaults", "Defaults"],
               ["about", "About"],
@@ -69,6 +72,8 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
 
         {tab === "servers" ? (
           <ServersTab open={open} onServersChanged={onServersChanged} />
+        ) : tab === "skills" ? (
+          <SkillsTab open={open} />
         ) : tab === "system" ? (
           <SystemPromptTab open={open} />
         ) : tab === "defaults" ? (
@@ -410,6 +415,316 @@ function ServerFormDialog({
             <Button type="submit" disabled={saving}>
               {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
               {server ? "Save" : "Add"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---- Skills tab ------------------------------------------------------------
+
+function SkillsTab({ open }: { open: boolean }) {
+  const [skills, setSkills] = useState<StoredSkill[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<StoredSkill | null>(null);
+  const [deleting, setDeleting] = useState<StoredSkill | null>(null);
+
+  const loadSkills = useCallback(async () => {
+    try {
+      setSkills(await invoke<StoredSkill[]>("list_skills"));
+    } catch (error) {
+      console.error("Failed to load skills:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) void loadSkills();
+  }, [open, loadSkills]);
+
+  // "Add skill" opens a file picker (.skill package or .md file) and hands
+  // the chosen path to the SkillStore.
+  const importSkill = async () => {
+    const picked = await openDialog({
+      multiple: false,
+      filters: [{ name: "Skill (.skill, .md)", extensions: ["skill", "md"] }],
+    });
+    if (typeof picked !== "string") return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      await invoke<StoredSkill>("import_skill", { path: picked });
+      await loadSkills();
+    } catch (error) {
+      setImportError(String(error));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const toggle = async (skill: StoredSkill, enabled: boolean) => {
+    try {
+      await invoke("set_skill_enabled", { id: skill.id, enabled });
+      setSkills((current) =>
+        current.map((item) => (item.id === skill.id ? { ...item, enabled } : item))
+      );
+    } catch (error) {
+      console.error("Failed to toggle skill:", error);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    try {
+      await invoke("delete_skill", { id: deleting.id });
+      setDeleting(null);
+      await loadSkills();
+    } catch (error) {
+      console.error("Failed to delete skill:", error);
+    }
+  };
+
+  const totalBytes = enabledTotalSize(skills);
+  const overCap = isOverCap(totalBytes);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Enabled skills join system prompts in server-model conversations only — they are
+        never sent to Claude Code or Codex.
+      </p>
+
+      {overCap && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400"
+        >
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Enabled skills use {formatBytes(totalBytes)} — past the{" "}
+            {formatBytes(SKILL_SIZE_CAP_BYTES)} prompt budget. Disable or trim some to
+            keep requests lean.
+          </span>
+        </div>
+      )}
+
+      {skills.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
+          <p>No skills yet. Import a .skill package or a markdown instruction file.</p>
+        </div>
+      ) : (
+        <ul className="max-h-64 space-y-2 overflow-y-auto">
+          {skills.map((skill) => (
+            <li
+              key={skill.id}
+              className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2"
+            >
+              <SkillToggle skill={skill} onToggle={(enabled) => void toggle(skill, enabled)} />
+              <div className="w-0 min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm">{skill.name}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {skill.kind === "package" ? "Package" : "Markdown"}
+                  </span>
+                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                    {formatBytes(skill.size_bytes)}
+                  </span>
+                </div>
+                {skill.description && (
+                  <div className="truncate text-xs text-muted-foreground">
+                    {skill.description}
+                  </div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground"
+                  onClick={() => setEditing(skill)}
+                  aria-label={`Edit ${skill.name}`}
+                  title="Edit content"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => setDeleting(skill)}
+                  aria-label={`Delete ${skill.name}`}
+                  title="Delete"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex justify-end">
+        <Button size="sm" onClick={() => void importSkill()} disabled={importing}>
+          {importing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Plus className="mr-1 h-4 w-4" />}
+          Add skill
+        </Button>
+      </div>
+
+      {importError && <p className="text-xs text-destructive">{importError}</p>}
+
+      <EditSkillDialog
+        skill={editing}
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        onSaved={async () => {
+          setEditing(null);
+          await loadSkills();
+        }}
+      />
+
+      <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete skill?</DialogTitle>
+            <DialogDescription>
+              “{deleting?.name}” and its files will be removed from the library. This
+              cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void confirmDelete()}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function SkillToggle({
+  skill,
+  onToggle,
+}: {
+  skill: StoredSkill;
+  onToggle: (enabled: boolean) => void;
+}) {
+  // Explicit pixel sizing + style-driven knob travel: the project's
+  // `--spacing` scale shifts Tailwind size utilities, which used to stretch
+  // the track and push the knob off it.
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={skill.enabled}
+      aria-label={skill.enabled ? `Disable ${skill.name}` : `Enable ${skill.name}`}
+      onClick={() => onToggle(!skill.enabled)}
+      style={{ width: 34, height: 20, padding: 2 }}
+      className={cn(
+        "relative inline-flex shrink-0 items-center rounded-full transition-colors",
+        skill.enabled ? "bg-primary" : "bg-muted-foreground/30"
+      )}
+    >
+      <span
+        style={{
+          width: 14,
+          height: 14,
+          transform: skill.enabled ? "translateX(14px)" : "translateX(0px)",
+        }}
+        className="rounded-full bg-background shadow-sm transition-transform"
+      />
+    </button>
+  );
+}
+
+function EditSkillDialog({
+  skill,
+  open,
+  onClose,
+  onSaved,
+}: {
+  skill: StoredSkill | null;
+  open: boolean;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [body, setBody] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !skill) return;
+    setName(skill.name);
+    setLoading(true);
+    setError(null);
+    invoke<string>("get_skill_content", { id: skill.id })
+      .then(setBody)
+      .catch((loadError) => setError(String(loadError)))
+      .finally(() => setLoading(false));
+  }, [open, skill]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!skill) return;
+    const trimmedName = name.trim();
+    if (trimmedName.length === 0) {
+      setError("Name cannot be empty.");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (trimmedName !== skill.name) {
+        await invoke("rename_skill", { id: skill.id, name: trimmedName });
+      }
+      await invoke("save_skill_content", { id: skill.id, body });
+      await onSaved();
+    } catch (saveError) {
+      setError(String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
+      <DialogContent>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>Edit skill — {skill?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="mt-3 space-y-3">
+            <label className="block space-y-1">
+              <span className="text-xs text-muted-foreground">Name</span>
+              <Input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Skill name"
+              />
+            </label>
+            <textarea
+              rows={10}
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              disabled={loading}
+              placeholder={loading ? "Loading…" : "Skill instructions…"}
+              className="w-full resize-y rounded-md border border-input bg-input px-2 py-2 font-mono text-xs outline-none placeholder:text-muted-foreground"
+            />
+            {error && <p className="text-xs text-destructive">{error}</p>}
+          </div>
+          <DialogFooter className="mt-4">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={loading || saving}>
+              {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              Save
             </Button>
           </DialogFooter>
         </form>
