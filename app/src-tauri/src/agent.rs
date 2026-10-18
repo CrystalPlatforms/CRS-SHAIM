@@ -126,9 +126,41 @@ pub fn adapter_for(kind: AgentKind) -> Box<dyn AgentAdapter> {
     }
 }
 
+/// The user's home directory across platforms — Unix sets `HOME`, Windows
+/// usually only `USERPROFILE`, and every CLI's config path hangs off it.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Windows CreateProcess only appends `.exe` — the npm-shimmed CLIs are
+/// `codex.cmd`/`claude.cmd` and would always read as missing. Resolve the
+/// real path once per spawn through `where` (which honors PATHEXT); other
+/// platforms spawn the bare name.
+fn resolve_binary(name: &str) -> String {
+    if cfg!(not(target_os = "windows")) || Path::new(name).extension().is_some() {
+        return name.to_string();
+    }
+    let Ok(output) = std::process::Command::new("where").arg(name).output() else {
+        return name.to_string();
+    };
+    if !output.status.success() {
+        return name.to_string();
+    }
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return name.to_string();
+    };
+    match stdout.lines().next().map(str::trim) {
+        Some(hit) if !hit.is_empty() => hit.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 /// GUI-launched apps on macOS get a bare PATH that never includes the usual
 /// CLI install spots (`~/.local/bin`, Homebrew). Prepending the common ones
 /// keeps agent spawning working outside `npm run tauri dev`.
+#[cfg(target_os = "macos")]
 fn augment_path(command: &mut Command) {
     const EXTRA: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", "/bin"];
     let mut paths: Vec<String> = EXTRA.iter().map(|p| p.to_string()).collect();
@@ -142,6 +174,11 @@ fn augment_path(command: &mut Command) {
     }
     command.env("PATH", paths.join(":"));
 }
+
+/// Other platforms inherit the environment PATH untouched — the Unix
+/// augment would only corrupt a Windows PATH (it joins with `:`).
+#[cfg(not(target_os = "macos"))]
+fn augment_path(_command: &mut Command) {}
 
 pub struct AgentRunner;
 
@@ -453,7 +490,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         model: Option<&str>,
         images: &[PathBuf],
     ) -> Command {
-        let mut command = Command::new(self.binary());
+        let mut command = Command::new(resolve_binary(self.binary()));
         command
             .current_dir(cwd)
             .args([
@@ -798,7 +835,7 @@ impl AgentAdapter for CodexAdapter {
         model: Option<&str>,
         images: &[PathBuf],
     ) -> Command {
-        let mut command = Command::new(self.binary());
+        let mut command = Command::new(resolve_binary(self.binary()));
         command
             .current_dir(cwd)
             // `--skip-git-repo-check`: a scratch project folder is not a git

@@ -20,6 +20,12 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Conversations still generating in the background (issue #21) — the
+   * sidebar badges them so the work stays visible from any chat. */
+  const [streamingIds, setStreamingIds] = useState<Set<number>>(new Set());
+  /** Conversations whose last generation failed (issue #23) — the sidebar
+   * marks them with the error loader until the next send clears it. */
+  const [errorIds, setErrorIds] = useState<Set<number>>(new Set());
 
   const refresh = useCallback(async () => {
     try {
@@ -52,11 +58,53 @@ export default function App() {
     }
   };
 
+  /** ChatPane reports generations starting and finishing; a deleted
+   * conversation drops its badge with it. */
+  const handleStreamingChanged = useCallback((id: number, streaming: boolean) => {
+    setStreamingIds((current) => {
+      if (streaming ? current.has(id) : !current.has(id)) return current;
+      const next = new Set(current);
+      if (streaming) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  /** ChatPane reports failures — the sidebar shows the error mark; the
+   * next send in that conversation clears it. */
+  const handleErrorChanged = useCallback((id: number, hasError: boolean) => {
+    setErrorIds((current) => {
+      if (hasError ? current.has(id) : !current.has(id)) return current;
+      const next = new Set(current);
+      if (hasError) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
   const handleDelete = async (id: number) => {
     try {
       await invoke("delete_conversation", { id });
       await refresh();
       setSelectedId((current) => (current === id ? null : current));
+      setStreamingIds((current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      setErrorIds((current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     } catch (error) {
       console.error("Failed to delete conversation:", error);
     }
@@ -84,6 +132,8 @@ export default function App() {
       <Sidebar
         conversations={conversations}
         selectedId={selectedId}
+        streamingIds={streamingIds}
+        errorIds={errorIds}
         open={sidebarOpen}
         onSelect={handleSelect}
         onCreate={handleCreate}
@@ -103,6 +153,8 @@ export default function App() {
         onSelectConversation={setSelectedId}
         jumpTarget={jumpTarget}
         onJumpHandled={() => setJumpTarget(null)}
+        onStreamingChanged={handleStreamingChanged}
+        onErrorChanged={handleErrorChanged}
       />
       <DetailPane
         conversation={selected}

@@ -36,7 +36,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MessageView, PendingImages } from "@/components/MessageView";
-import { AgentLoader } from "@/components/AgentLoader";
+import { StreamStatus } from "@/components/loaders/StreamStatus";
+import { AgentLoader } from "@/components/loaders/AgentLoader";
 import { ActivityBlock } from "@/components/ActivityBlock";
 import { paletteSelection, skillRows } from "@/lib/skillPalette";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,12 @@ interface ChatPaneProps {
   jumpTarget: { conversationId: number; messageId: number } | null;
   /** Acknowledges the jump once it has been performed. */
   onJumpHandled: () => void;
+  /** Reports background work — the sidebar badges conversations that are
+   * still generating after the user switched away (issue #21). */
+  onStreamingChanged: (conversationId: number, streaming: boolean) => void;
+  /** Reports a conversation's error state — the sidebar shows the error
+   * mark next to chats that failed until the next send clears it. */
+  onErrorChanged: (conversationId: number, hasError: boolean) => void;
 }
 
 function ShowSidebarButton({ onClick }: { onClick: () => void }) {
@@ -96,6 +103,17 @@ function ShowDetailsButton({ onClick }: { onClick: () => void }) {
 interface StreamState {
   thinking: string;
   segments: StreamSegment[];
+}
+
+/** One conversation's in-flight generation (issue #21): the buffer keeps
+ * filling while the user reads another chat, and coming back resumes the
+ * live view from exactly where the stream stands. */
+interface ConversationStream {
+  buffer: StreamState;
+  streaming: boolean;
+  generationId: number | null;
+  /** The last failure — resurfaced when the conversation is reopened. */
+  error: string | null;
 }
 
 /** A message being edited: sending continues the conversation from it. */
@@ -388,6 +406,8 @@ export function ChatPane({
   onSelectConversation,
   jumpTarget,
   onJumpHandled,
+  onStreamingChanged,
+  onErrorChanged,
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -423,7 +443,15 @@ export function ChatPane({
     null,
   );
 
-  const generationRef = useRef<number | null>(null);
+  /** Per-conversation in-flight generations (issue #21): switching chats
+   * never interrupts one. Each entry owns its buffer, generation id and
+   * error; the `stream`/`error` state below are only the displayed
+   * conversation's window onto its entry. */
+  const streamsRef = useRef<Map<number, ConversationStream>>(new Map());
+  /** The conversation currently on screen — stream events always land in
+   * their own conversation's entry, but only the displayed one mirrors
+   * into component state. */
+  const displayedIdRef = useRef<number | null>(null);
   /** Guards stale '@' file queries — only the newest detection wins. */
   const suggestionRequestIdRef = useRef(0);
 
@@ -471,9 +499,20 @@ export function ChatPane({
       window.removeEventListener("shaim:skills-changed", reload);
     };
   }, [conversation?.id]);
-  const bufferRef = useRef<StreamState>({ thinking: "", segments: [] });
-  const streamingRef = useRef(false);
-  /** The composer is a contentEditable — plain text + inline ask chips. */
+  /** The conversation's stream entry, created on first use. */
+  const entryFor = useCallback((conversationId: number): ConversationStream => {
+    let entry = streamsRef.current.get(conversationId);
+    if (!entry) {
+      entry = {
+        buffer: { thinking: "", segments: [] },
+        streaming: false,
+        generationId: null,
+        error: null,
+      };
+      streamsRef.current.set(conversationId, entry);
+    }
+    return entry;
+  }, []);
   const composerRef = useRef<HTMLDivElement>(null);
   /** Scrollable palette dropdown — arrow keys keep the selection in view. */
   const paletteRef = useRef<HTMLDivElement>(null);
@@ -576,9 +615,11 @@ export function ChatPane({
     if (stickToBottomRef.current) scrollToBottom();
   }, [messages, stream, scrollToBottom]);
 
-  // Load the thread whenever the selected conversation changes.
+  // Load the thread whenever the selected conversation changes. A
+  // generation left running in the background (issue #21) keeps going —
+  // the live view resumes from its buffer the moment the chat reopens.
   useEffect(() => {
-    streamingRef.current = false;
+    displayedIdRef.current = conversation?.id ?? null;
     stickToBottomRef.current = true;
     setMessages([]);
     setStream(null);
@@ -594,6 +635,16 @@ export function ChatPane({
     setSuggestions(null);
     if (!conversation) return;
 
+    // Still working? Show the live stream again, exactly where it stands.
+    const entry = streamsRef.current.get(conversation.id);
+    if (entry?.streaming) {
+      setStream({
+        thinking: entry.buffer.thinking,
+        segments: [...entry.buffer.segments],
+      });
+    }
+    if (entry?.error) setError(entry.error);
+
     let cancelled = false;
     invoke<Message[]>("list_messages", { conversationId: conversation.id })
       .then((loaded) => {
@@ -605,11 +656,16 @@ export function ChatPane({
     };
   }, [conversation?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** Copies the DISPLAYED conversation's buffer into render state — the
+   * flush loop that keeps typing responsive while a stream runs. */
   const flushBuffer = useCallback(() => {
-    if (!streamingRef.current) return;
+    const id = displayedIdRef.current;
+    if (id === null) return;
+    const entry = streamsRef.current.get(id);
+    if (!entry?.streaming) return;
     setStream({
-      thinking: bufferRef.current.thinking,
-      segments: [...bufferRef.current.segments],
+      thinking: entry.buffer.thinking,
+      segments: [...entry.buffer.segments],
     });
   }, []);
 
@@ -621,10 +677,15 @@ export function ChatPane({
     }
   }, []);
 
+  /** Stops the DISPLAYED conversation's generation — background ones keep
+   * running until their own chat is reopened and stopped there. */
   const stop = useCallback(async () => {
-    if (generationRef.current === null) return;
+    const id = displayedIdRef.current;
+    if (id === null) return;
+    const generationId = streamsRef.current.get(id)?.generationId ?? null;
+    if (generationId === null) return;
     try {
-      await invoke("stop_generation", { generationId: generationRef.current });
+      await invoke("stop_generation", { generationId });
     } catch (err) {
       console.error("Failed to stop generation:", err);
     }
@@ -635,55 +696,74 @@ export function ChatPane({
    * regenerate / edit_message) and drives its stream. Natural mode converges
    * on "history as stored → one streamed assistant message appended"; agent
    * mode streams many segments and finishes with a full history push.
+   *
+   * Every event lands in the running conversation's own entry (issue #21),
+   * so switching chats never mixes threads; only the displayed conversation
+   * also mirrors into component state.
    */
   const runCommand = useCallback(
     (conversationId: number, command: string, args: Record<string, unknown>) => {
-      if (streamingRef.current) return;
+      const entry = entryFor(conversationId);
+      if (entry.streaming) return;
+      entry.buffer = { thinking: "", segments: [] };
+      entry.error = null;
+      entry.generationId = null;
+      entry.streaming = true;
+      onStreamingChanged(conversationId, true);
+      onErrorChanged(conversationId, false);
       setError(null);
-      bufferRef.current = { thinking: "", segments: [] };
-      streamingRef.current = true;
-      setStream({ thinking: "", segments: [] });
-      // Sending always means "show me the latest" — even if the user had
-      // scrolled up, ride down to the new message.
-      stickToBottomRef.current = true;
-      scrollToBottom(true);
+      if (displayedIdRef.current === conversationId) {
+        setStream({ thinking: "", segments: [] });
+        // Sending always means "show me the latest" — even if the user had
+        // scrolled up, ride down to the new message.
+        stickToBottomRef.current = true;
+        scrollToBottom(true);
+      }
 
       const channel = new Channel<ChatStreamEvent>();
       channel.onmessage = (event) => {
+        // Stable for the conversation's lifetime — closures capture it.
+        const live = entry;
         switch (event.type) {
           case "user_message":
-            setMessages((current) => [
-              ...current,
-              {
-                id: event.id,
-                conversation_id: conversationId,
-                role: "user",
-                content: event.content,
-                thinking: null,
-                images: event.images,
-                reaction: null,
-                skill_name: event.skill_name,
-                created_at: Math.floor(Date.now() / 1000),
-              },
-            ]);
+            // A background conversation's thread reloads from the store on
+            // switch — only the on-screen one needs the live append.
+            if (displayedIdRef.current === conversationId) {
+              setMessages((current) => [
+                ...current,
+                {
+                  id: event.id,
+                  conversation_id: conversationId,
+                  role: "user",
+                  content: event.content,
+                  thinking: null,
+                  images: event.images,
+                  reaction: null,
+                  skill_name: event.skill_name,
+                  created_at: Math.floor(Date.now() / 1000),
+                },
+              ]);
+            }
             break;
           case "history":
             // The store rewrote the path (edit truncation, regenerate
             // removal, agent persistence) — mirror the canonical history.
-            setMessages(event.messages);
+            if (displayedIdRef.current === conversationId) {
+              setMessages(event.messages);
+            }
             break;
           case "started":
             // The id arrives before the stream does — Stop works mid-flight
             // (the command itself only returns once everything finished).
-            generationRef.current = event.generation_id;
+            live.generationId = event.generation_id;
             break;
           case "thinking":
-            bufferRef.current.thinking += event.text;
+            live.buffer.thinking += event.text;
             break;
           case "content": {
             // Natural mode appends to the streamed text; agent mode opens a
             // new text piece after each activity block.
-            const segments = bufferRef.current.segments;
+            const segments = live.buffer.segments;
             const last = segments[segments.length - 1];
             if (last?.kind === "text") {
               last.text += event.text;
@@ -693,7 +773,7 @@ export function ChatPane({
             break;
           }
           case "activity_start":
-            bufferRef.current.segments.push({
+            live.buffer.segments.push({
               kind: "activity",
               title: event.title,
               detail: "",
@@ -701,17 +781,17 @@ export function ChatPane({
             });
             break;
           case "activity_append": {
-            const target = lastActivity(bufferRef.current.segments);
+            const target = lastActivity(live.buffer.segments);
             if (target) target.detail += event.detail;
             break;
           }
           case "activity_retitle": {
-            const target = lastActivity(bufferRef.current.segments);
+            const target = lastActivity(live.buffer.segments);
             if (target) target.title = event.title;
             break;
           }
           case "activity_end": {
-            const target = lastActivity(bufferRef.current.segments);
+            const target = lastActivity(live.buffer.segments);
             if (target) target.open = false;
             break;
           }
@@ -719,58 +799,79 @@ export function ChatPane({
             onConversationsChanged();
             break;
           case "done": {
-            streamingRef.current = false;
-            generationRef.current = null;
-            setMessages((current) => [
-              ...current,
-              {
-                id: event.message_id,
-                conversation_id: conversationId,
-                role: "assistant",
-                content: event.content,
-                thinking: event.thinking.length > 0 ? event.thinking : null,
-                images: [],
-                reaction: null,
-                skill_name: null,
-                created_at: Math.floor(Date.now() / 1000),
-              },
-            ]);
-            setStream(null);
+            live.streaming = false;
+            live.generationId = null;
+            if (displayedIdRef.current === conversationId) {
+              setMessages((current) => [
+                ...current,
+                {
+                  id: event.message_id,
+                  conversation_id: conversationId,
+                  role: "assistant",
+                  content: event.content,
+                  thinking: event.thinking.length > 0 ? event.thinking : null,
+                  images: [],
+                  reaction: null,
+                  skill_name: null,
+                  created_at: Math.floor(Date.now() / 1000),
+                },
+              ]);
+              setStream(null);
+            }
+            onStreamingChanged(conversationId, false);
             if (event.aborted) onConversationsChanged();
             break;
           }
-          case "agent_done":
+          case "agent_done": {
             // The persisted segments already arrived as a history push.
-            streamingRef.current = false;
-            generationRef.current = null;
-            setStream(null);
-            if (event.error) setError(event.error);
+            live.streaming = false;
+            live.generationId = null;
+            if (displayedIdRef.current === conversationId) {
+              setStream(null);
+              if (event.error) setError(event.error);
+            }
+            if (event.error) live.error = event.error;
+            onStreamingChanged(conversationId, false);
+            onErrorChanged(conversationId, event.error != null);
             onConversationsChanged();
             break;
-          case "error":
-            streamingRef.current = false;
-            generationRef.current = null;
-            setError(event.message);
-            setStream(null);
-            // A failed/partial stream persists what arrived — reload to show it.
-            void reloadMessages(conversationId);
+          }
+          case "error": {
+            live.streaming = false;
+            live.generationId = null;
+            live.error = event.message;
+            if (displayedIdRef.current === conversationId) {
+              setError(event.message);
+              setStream(null);
+              // A failed/partial stream persists what arrived — reload to
+              // show it.
+              void reloadMessages(conversationId);
+            }
+            onStreamingChanged(conversationId, false);
+            onErrorChanged(conversationId, true);
             break;
+          }
         }
       };
 
       invoke<number>(command, { conversationId, ...args, channel })
         .then((id) => {
-          generationRef.current = id;
+          entry.generationId = id;
         })
         .catch((err) => {
-          streamingRef.current = false;
-          generationRef.current = null;
-          setStream(null);
-          setError(String(err));
+          entry.streaming = false;
+          entry.generationId = null;
+          entry.error = String(err);
+          onStreamingChanged(conversationId, false);
+          onErrorChanged(conversationId, true);
+          if (displayedIdRef.current === conversationId) {
+            setStream(null);
+            setError(String(err));
+          }
           onConversationsChanged();
         });
     },
-    [onConversationsChanged, reloadMessages, scrollToBottom],
+    [entryFor, onConversationsChanged, onErrorChanged, onStreamingChanged, reloadMessages, scrollToBottom],
   );
 
   /** Drops every ask chip — DOM first, then the mirrored state. */
@@ -1052,6 +1153,9 @@ export function ChatPane({
   const send = useCallback(() => {
     if (!conversation) return;
     if (conversation.mode === "agent" && !conversation.project_path) return;
+    // This chat may still be generating in the background (issue #21) —
+    // keep the composer intact instead of silently eating the message.
+    if (streamsRef.current.get(conversation.id)?.streaming) return;
     const text = draft.trim();
     if (text.length === 0 && pendingImages.length === 0) return;
 
@@ -1148,6 +1252,8 @@ export function ChatPane({
 
   const submitEdit = useCallback(() => {
     if (!conversation || !editing) return;
+    // The conversation still generating keeps its edit queue closed.
+    if (streamsRef.current.get(conversation.id)?.streaming) return;
     const el = composerRef.current;
     const text = (el ? composerText(el) : "").trim();
     if (text.length === 0) return;
@@ -1484,6 +1590,7 @@ export function ChatPane({
             {isStreaming && <StreamingMessage stream={stream} />}
             {error && (
               <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">
+                <AgentLoader type="error" dotClassName="h-[3px] w-[3px]" className="shrink-0" />
                 <span className="min-w-0 flex-1 text-xs text-destructive">
                   {error}
                 </span>
@@ -1519,12 +1626,13 @@ export function ChatPane({
             Ask about it
           </button>
         )}
-        {isStreaming && (
-          <div className="mb-2 flex items-center gap-2 px-1 text-muted-foreground">
-            <AgentLoader type="orbit" dotClassName="h-[3px] w-[3px]" />
-            <span className="text-xs italic">Discombobulating...</span>
-          </div>
-        )}
+        {/* Always visible: the phase loader while streaming, Idle at rest. */}
+        <StreamStatus
+          stream={stream}
+          brain={isCliBrain ? "cli" : "server"}
+          className="mb-2 px-1"
+          dotClassName="h-[3px] w-[3px]"
+        />
         {editing && (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
             <Pencil className="h-3.5 w-3.5 shrink-0" />
@@ -1594,7 +1702,7 @@ export function ChatPane({
                 />
               </label>
             ))}
-          <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card">
+          <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card transition-colors focus-within:border-primary/40">
             {/* Slash-command / @-file palette (every mode) */}
             {suggestions && suggestions.items.length > 0 && (
               <div
@@ -1883,7 +1991,7 @@ export function ChatPane({
                     onClick={() => void stop()}
                     aria-label="Stop generating"
                     title="Stop generating"
-                    className="text-destructive"
+                    className="animate-soft-pulse text-destructive transition-transform hover:scale-110 active:scale-95"
                   >
                     <Square />
                   </Button>
@@ -1898,6 +2006,7 @@ export function ChatPane({
                     }
                     aria-label={editing ? "Save edit" : "Send"}
                     title={editing ? "Save edit (Enter)" : "Send (Enter)"}
+                    className="transition-transform hover:scale-110 active:scale-95 disabled:hover:scale-100"
                   >
                     {editing ? <Pencil /> : <SendHorizontal />}
                   </Button>
@@ -1908,14 +2017,15 @@ export function ChatPane({
         </div>
       </footer>
 
-      {/* Delete-message confirmation */}
+      {/* Delete-message confirmation — Enter lands on the destructive
+          action, never on Cancel (issue #21). */}
       <Dialog
         open={deleting !== null}
         onOpenChange={(open) => {
           if (!open) setDeleting(null);
         }}
       >
-        <DialogContent>
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Delete message?</DialogTitle>
             <DialogDescription>
@@ -1927,7 +2037,7 @@ export function ChatPane({
             <Button variant="ghost" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void confirmDelete()}>
+            <Button variant="destructive" autoFocus onClick={() => void confirmDelete()}>
               Delete
             </Button>
           </DialogFooter>
@@ -1941,7 +2051,7 @@ export function ChatPane({
           if (!open) setRemovingAsk(null);
         }}
       >
-        <DialogContent>
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Remove quoted selection?</DialogTitle>
             <DialogDescription>
@@ -1953,7 +2063,7 @@ export function ChatPane({
             <Button variant="ghost" onClick={() => setRemovingAsk(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={confirmRemoveAsk}>
+            <Button variant="destructive" autoFocus onClick={confirmRemoveAsk}>
               Remove
             </Button>
           </DialogFooter>
@@ -1967,7 +2077,7 @@ export function ChatPane({
           if (!open) setRemovingSkill(null);
         }}
       >
-        <DialogContent>
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Remove skill?</DialogTitle>
             <DialogDescription>
@@ -1978,7 +2088,7 @@ export function ChatPane({
             <Button variant="ghost" onClick={() => setRemovingSkill(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={confirmRemoveSkill}>
+            <Button variant="destructive" autoFocus onClick={confirmRemoveSkill}>
               Remove
             </Button>
           </DialogFooter>
@@ -2152,25 +2262,26 @@ function ModelPopup({
 }
 
 /** The in-flight stream: plain streaming text pieces and live activity
- * blocks, no chrome — the orbit loader lives pinned above the composer. */
+ * blocks, no chrome — the phase loader lives pinned above the composer.
+ * Each new piece fades into place as it appears. */
 function StreamingMessage({ stream }: { stream: StreamState }) {
   return (
     <div className="flex w-full justify-start px-1">
       <div className="w-full max-w-[85%] min-w-0 space-y-2">
         {stream.thinking.length > 0 && (
-          <p className="mb-1 whitespace-pre-wrap text-xs italic text-muted-foreground">
+          <p className="animate-fade-in mb-1 whitespace-pre-wrap text-xs italic text-muted-foreground">
             {stream.thinking}
           </p>
         )}
         {stream.segments.map((segment, index) =>
           segment.kind === "text" ? (
-            <p key={index} className="whitespace-pre-wrap text-sm">
+            <p key={index} className="animate-fade-in whitespace-pre-wrap text-sm">
               {segment.text}
             </p>
           ) : isReasoningTitle(segment.title) ? (
             <p
               key={index}
-              className="whitespace-pre-wrap text-xs italic text-muted-foreground"
+              className="animate-fade-in whitespace-pre-wrap text-xs italic text-muted-foreground"
             >
               {segment.detail}
             </p>

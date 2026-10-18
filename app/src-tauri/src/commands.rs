@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::agent::{adapter_for, AgentEvent, AgentRunner, Segment};
+use crate::agent::{adapter_for, home_dir, AgentEvent, AgentRunner, Segment};
 use crate::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, ModelInfo};
 use crate::skills::{self, SkillStore};
 use crate::store::{AgentKind, Conversation, Message, Server, Settings, Skill, Store};
@@ -143,11 +143,11 @@ pub fn set_conversation_mode(state: State<'_, AppState>, id: i64, mode: String) 
 /// Expands a leading `~` to the user's home directory.
 fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = home_dir() {
             return PathBuf::from(home);
         }
     } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = home_dir() {
             let mut expanded = PathBuf::from(home);
             expanded.push(rest);
             return expanded;
@@ -314,7 +314,7 @@ pub fn set_conversation_brain(
 #[tauri::command]
 pub fn list_cli_models(agent_kind: String) -> CmdResult<Vec<String>> {
     let kind = AgentKind::parse(&agent_kind).map_err(|e| e.to_string())?;
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    let Some(home) = home_dir() else {
         return Ok(vec!["default".to_string()]);
     };
     let mut models = vec!["default".to_string()];
@@ -437,9 +437,7 @@ pub struct SkillInfo {
 #[tauri::command]
 pub fn list_agent_skills(agent_kind: String) -> CmdResult<Vec<SkillInfo>> {
     let kind = AgentKind::parse(&agent_kind).map_err(|e| e.to_string())?;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("no home directory")?;
+    let home = home_dir().ok_or("no home directory")?;
     let mut skills = Vec::new();
     match kind {
         AgentKind::ClaudeCode => {
@@ -1005,9 +1003,7 @@ pub async fn send_agent_message(
             }
             cwd
         } else {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
+            home_dir().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
         };
         let skill_name = match skill_id {
             Some(id) => {

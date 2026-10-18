@@ -9,6 +9,7 @@ export type LoaderType =
   | "breathe"
   | "snake"
   | "fill-sweep"
+  | "fill"
   | "pulse"
   | "columns"
   | "checkerboard"
@@ -18,7 +19,9 @@ export type LoaderType =
   | "sparkle"
   | "wave-rows"
   | "helix"
-  | "diagonal-swipe";
+  | "diagonal-swipe"
+  | "idle"
+  | "error";
 
 interface AgentLoaderProps {
   className?: string;
@@ -26,7 +29,7 @@ interface AgentLoaderProps {
   type?: LoaderType;
 }
 
-const getOpacities = (type: LoaderType, i: number): number[] => {
+const getOpacities = (type: LoaderType, i: number): number | number[] => {
   const OFF = 0.15;
   const ON = 1;
   const row = Math.floor(i / 3);
@@ -85,6 +88,12 @@ const getOpacities = (type: LoaderType, i: number): number[] => {
       );
       return [...frames, frames[0]];
     }
+    // The "Writing" loader from the /loaders gallery: every square holds
+    // dim until its turn, then fills to full — the grid reads as one
+    // progress sweep over the whole cycle.
+    case "fill": {
+      return [OFF, OFF, ON, ON];
+    }
     case "diagonal-swipe": {
       const dist = row + col;
       const frames = Array.from({ length: 10 }, (_, s) =>
@@ -141,6 +150,13 @@ const getOpacities = (type: LoaderType, i: number): number[] => {
     }
     case "rain":
       return [OFF, ON, OFF, OFF, OFF];
+    // idle.html / error.html are STATIC marks — a plain value (not a
+    // keyframe array) so motion runs no animation at all. Idle is dim,
+    // like the gallery's #666 grid.
+    case "idle":
+      return 0.45;
+    case "error":
+      return 1;
     case "breathe":
     case "cascade":
     case "sparkle":
@@ -205,6 +221,14 @@ const getTransition = (type: LoaderType, i: number): any => {
       return { duration: 1.2, ...linear };
     case "fill-sweep":
       return { duration: 1.2, ...linear };
+    case "fill":
+      // One square at a time across a 2.4 s cycle — mirrors the gallery's
+      // writing.html keyframes exactly (hold dim, ramp to full, hold).
+      return {
+        duration: 2.4,
+        times: [0, i / 9, (i + 1) / 9, 1],
+        ...linear,
+      };
     case "diagonal-swipe":
       return { duration: 1.5, ...linear };
     case "columns":
@@ -216,6 +240,10 @@ const getTransition = (type: LoaderType, i: number): any => {
       return { duration: 1.5, ...linear };
     case "braille":
       return { duration: 1.2, ...linear };
+    // Static marks: nothing repeats, nothing moves.
+    case "idle":
+    case "error":
+      return { duration: 0 };
     default:
       return { duration: 1, ...linear };
   }
@@ -232,6 +260,10 @@ export function AgentLoader({
 
   return (
     <div
+      // REMOUNT on pattern change: patterns with identical keyframes but
+      // different timing (cascade vs sparkle) would otherwise keep the old
+      // animation's rhythm — motion never restarts unchanged keyframes.
+      key={type}
       className={cn("grid gap-[2px]", className)}
       style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}
     >
@@ -242,7 +274,15 @@ export function AgentLoader({
         return (
           <motion.div
             animate={{ opacity: opacities }}
-            className={cn("h-1 w-1 bg-current", dotClassName)}
+            className={cn(
+              "h-1 w-1 bg-current",
+              // error.html: a red X from the even cells, dim gray fills.
+              type === "error" &&
+                (i % 2 === 0
+                  ? "bg-[#f04444] shadow-[0_0_5px_rgba(240,68,68,0.45)]"
+                  : "bg-[#3b3b3b]"),
+              dotClassName,
+            )}
             key={i}
             transition={transition}
           />

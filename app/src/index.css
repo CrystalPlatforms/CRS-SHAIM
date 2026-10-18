@@ -258,6 +258,30 @@
   }
 }
 
+/* A message arriving: a gentle rise into place. A loaded thread glides in
+   as one, live arrivals land one by one as they mount. */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* The stop button breathes while a generation runs — alive, not alarming. */
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
 @layer utilities {
   .animate-fade-in {
     animation: fade-in 0.2s ease-out both;
@@ -279,6 +303,12 @@
   }
   .animate-highlight-pulse {
     animation: highlight-pulse 1.2s ease-in-out infinite;
+  }
+  .animate-message-in {
+    animation: message-in 0.25s ease-out both;
+  }
+  .animate-soft-pulse {
+    animation: soft-pulse 1.6s ease-in-out infinite;
   }
 }
 

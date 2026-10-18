@@ -246,7 +246,7 @@ function ServersTab({
       />
 
       <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
-        <DialogContent>
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Delete server?</DialogTitle>
             <DialogDescription>
@@ -258,7 +258,7 @@ function ServersTab({
             <Button variant="ghost" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void confirmDelete()}>
+            <Button variant="destructive" autoFocus onClick={() => void confirmDelete()}>
               Delete
             </Button>
           </DialogFooter>
@@ -588,7 +588,7 @@ function SkillsTab({ open }: { open: boolean }) {
       />
 
       <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
-        <DialogContent>
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>Delete skill?</DialogTitle>
             <DialogDescription>
@@ -600,7 +600,7 @@ function SkillsTab({ open }: { open: boolean }) {
             <Button variant="ghost" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void confirmDelete()}>
+            <Button variant="destructive" autoFocus onClick={() => void confirmDelete()}>
               Delete
             </Button>
           </DialogFooter>

@@ -18,12 +18,12 @@ interface ActivityBlockProps {
 export function ActivityBlock({ title, detail, defaultOpen = false }: ActivityBlockProps) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-lg border border-border bg-muted/20 text-xs">
+    <div className="animate-fade-in rounded-lg border border-border bg-muted/20 text-xs">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-muted-foreground hover:text-foreground"
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:text-foreground"
       >
         <ChevronRight
           className={cn(
@@ -34,7 +34,7 @@ export function ActivityBlock({ title, detail, defaultOpen = false }: ActivityBl
         <span className="min-w-0 truncate font-medium">{title}</span>
       </button>
       {open && detail.length > 0 && (
-        <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words border-t border-border px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <pre className="animate-fade-in max-h-64 overflow-y-auto whitespace-pre-wrap break-words border-t border-border px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
           {detail}
         </pre>
       )}

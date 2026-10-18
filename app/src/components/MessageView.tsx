@@ -97,7 +97,7 @@ export function MessageView({
       <div
         data-message-id={message.id}
         className={cn(
-          "group/message flex w-full flex-col items-end rounded-lg",
+          "group/message animate-message-in flex w-full flex-col items-end rounded-lg",
           highlighted && "animate-highlight-pulse"
         )}
       >
@@ -140,7 +140,7 @@ export function MessageView({
           <div
             data-message-id={message.id}
             className={cn(
-              "group/message flex w-full justify-start rounded-lg px-1",
+              "group/message animate-message-in flex w-full justify-start rounded-lg px-1",
               highlighted && "animate-highlight-pulse"
             )}
           >
@@ -161,7 +161,7 @@ export function MessageView({
       <div
         data-message-id={message.id}
         className={cn(
-          "group/message flex w-full justify-start rounded-lg px-1",
+          "group/message animate-message-in flex w-full justify-start rounded-lg px-1",
           highlighted && "animate-highlight-pulse"
         )}
       >

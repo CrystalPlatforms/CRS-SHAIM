@@ -5,6 +5,7 @@ import { MessageSquare, PanelLeftClose, Pencil, Plus, Search, Settings, Trash2 }
 import type { Conversation, SearchHit } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AgentLoader } from "@/components/loaders/AgentLoader";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,6 +26,12 @@ import { cn } from "@/lib/utils";
 interface SidebarProps {
   conversations: Conversation[];
   selectedId: number | null;
+  /** Conversations still generating in the background (issue #21) — each
+   * gets a pulsing dot so the work stays visible from any chat. */
+  streamingIds: Set<number>;
+  /** Conversations whose last generation failed (issue #23) — the error
+   * mark outranks the working dot. */
+  errorIds: Set<number>;
   open: boolean;
   onSelect: (id: number) => void;
   onCreate: () => void;
@@ -44,6 +51,8 @@ interface SidebarProps {
 export function Sidebar({
   conversations,
   selectedId,
+  streamingIds,
+  errorIds,
   open,
   onSelect,
   onCreate,
@@ -199,13 +208,34 @@ export function Sidebar({
                     type="button"
                     onClick={() => onSelect(conversation.id)}
                     className={cn(
-                      "block w-full truncate rounded-md px-3 py-2 text-left text-sm transition-colors",
+                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-all duration-150 hover:translate-x-0.5",
                       conversation.id === selectedId
                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                     )}
                   >
-                    {conversation.title}
+                    <span className="min-w-0 flex-1 truncate">
+                      {conversation.title}
+                    </span>
+                    {errorIds.has(conversation.id) ? (
+                      <span
+                        title="Something went wrong in this chat"
+                        className="shrink-0"
+                      >
+                        <AgentLoader type="error" dotClassName="h-[2px] w-[2px]" />
+                        <span className="sr-only">Error</span>
+                      </span>
+                    ) : (
+                      streamingIds.has(conversation.id) && (
+                        <span
+                          title="Still working in the background"
+                          className="shrink-0 text-primary"
+                        >
+                          <AgentLoader type="orbit" dotClassName="h-[2px] w-[2px]" />
+                          <span className="sr-only">Working…</span>
+                        </span>
+                      )
+                    )}
                   </button>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
@@ -266,14 +296,14 @@ export function Sidebar({
           </DialogContent>
         </Dialog>
 
-        {/* Delete confirmation dialog */}
+        {/* Delete confirmation dialog — Enter confirms, never cancels. */}
         <Dialog
           open={deleting !== null}
           onOpenChange={(open) => {
             if (!open) setDeleting(null);
           }}
         >
-          <DialogContent>
+          <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
             <DialogHeader>
               <DialogTitle>Delete conversation?</DialogTitle>
               <DialogDescription>
@@ -285,7 +315,7 @@ export function Sidebar({
               <Button variant="ghost" onClick={() => setDeleting(null)}>
                 Cancel
               </Button>
-              <Button variant="destructive" onClick={confirmDelete}>
+              <Button variant="destructive" autoFocus onClick={confirmDelete}>
                 Delete
               </Button>
             </DialogFooter>
