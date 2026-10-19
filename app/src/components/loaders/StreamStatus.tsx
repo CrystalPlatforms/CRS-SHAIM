@@ -1,4 +1,5 @@
 import type { StreamSegment } from "@/types";
+import { ShinyText } from "@/components/ui/ShinyText";
 import { AgentLoader } from "./AgentLoader";
 import {
   currentPhase,
@@ -24,7 +25,9 @@ interface StreamStatusProps {
  * dot-matrix loader plus a fixed label that follows what the model is
  * doing right now — Connecting, Thinking, Reading, Searching, Writing,
  * Generating… — with Discombobulating everywhere else and Idle when
- * nothing is going on. The label only changes when the phase changes. */
+ * nothing is going on. The label only changes when the phase changes.
+ * Issue #24: the label is a ShinyText — a band of light sweeps the
+ * glyphs while work is happening; Idle stays plain. */
 export function StreamStatus({
   stream,
   brain = "cli",
@@ -34,6 +37,7 @@ export function StreamStatus({
   const phase = stream === null ? { kind: "idle" as const } : currentPhase(stream, brain);
   const verb = phaseVerb(phase);
   const label = labelFor(verb);
+  const working = phase.kind !== "idle";
 
   return (
     <div
@@ -42,9 +46,22 @@ export function StreamStatus({
     >
       <AgentLoader type={verbLoader(verb)} dotClassName={dotClassName} />
       {/* The key remounts the label on change — the fade-in IS the crossfade. */}
-      <span key={label} className="animate-fade-in text-xs italic">
-        {label}
-      </span>
+      <ShinyText
+        key={label}
+        text={label}
+        color="#5d5d5d"
+        shineColor="#ffffff"
+        speed={1.5}
+        shineWidth={60}
+        softness={0.8}
+        trigger="loop"
+        delay={2}
+        angle={90}
+        direction="right"
+        // Idle stays plain — the shine belongs to work in progress.
+        disabled={!working}
+        className="text-xs italic"
+      />
     </div>
   );
 }

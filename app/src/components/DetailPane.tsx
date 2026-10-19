@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Loader2, PanelRightClose } from "lucide-react";
 
-import type { AppSettings, Conversation, ModelInfo, Server } from "@/types";
+import type { AppSettings, Conversation, Message, ModelInfo, Server } from "@/types";
+import {
+  EXPORT_FORMATS,
+  buildExportFile,
+  bytesToBase64,
+  type ExportFormat,
+} from "@/lib/chatExport";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ModePill } from "@/components/ChatPane";
 import { cn } from "@/lib/utils";
 
@@ -48,22 +61,35 @@ function ModelSelect({
 }) {
   return (
     <div className="relative">
-      <select
-        aria-label="Model"
-        value={value ?? ""}
+      <Select
+        value={value ?? undefined}
         disabled={disabled || loading}
-        onChange={(event) => onChange(event.target.value || null)}
-        className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 text-xs outline-none disabled:opacity-50"
+        onValueChange={(modelId) => onChange(modelId)}
       >
-        <option value="">{loading ? "Loading models…" : fallbackLabel}</option>
-        {models.map((model) => (
-          <option key={model.id} value={model.id}>
-            {model.id}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger aria-label="Model">
+          {/* Radix only portals the selected item's text while the list is
+              open — the current label travels as children so the closed
+              trigger never goes blank. */}
+          <SelectValue placeholder={loading ? "Loading models…" : fallbackLabel}>
+            {value ?? undefined}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {models.length === 0 ? (
+            <SelectItem value="placeholder" disabled>
+              {loading ? "Loading models…" : fallbackLabel}
+            </SelectItem>
+          ) : (
+            models.map((model) => (
+              <SelectItem key={model.id} value={model.id}>
+                {model.id}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
       {loading && (
-        <Loader2 className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+        <Loader2 className="pointer-events-none absolute right-7 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
       )}
     </div>
   );
@@ -106,6 +132,13 @@ export function DetailPane({
   const [sysMode, setSysMode] = useState<SystemPromptMode>(() => promptModeOf(conversation));
   /** A failed brain switch — shown instead of silently reverting. */
   const [brainError, setBrainError] = useState<string | null>(null);
+  /** The export currently building — buttons show a spinner, stay enabled
+   * for the others; null means no export is running (issue #25). */
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  /** Remounts the export launcher after each pick so it snaps back to the
+   * placeholder instead of showing the chosen format as a setting. */
+  const [exportNonce, setExportNonce] = useState(0);
 
   // Re-read the settings draft whenever another conversation is selected.
   useEffect(() => {
@@ -261,6 +294,41 @@ export function DetailPane({
     [conversation, onConversationsChanged],
   );
 
+  /** Exports the conversation (issue #25): pulls the full history, builds
+   * the chosen document in the webview, asks where to save it and writes
+   * it through the save_export command. Cancelling the dialog is a no-op. */
+  const runExport = useCallback(
+    async (format: ExportFormat) => {
+      if (!conversation) return;
+      setExporting(format);
+      setExportError(null);
+      try {
+        const history = await invoke<Message[]>("list_messages", {
+          conversationId: conversation.id,
+        });
+        const spec = EXPORT_FORMATS.find((entry) => entry.format === format);
+        const file = buildExportFile(conversation.title, history, format);
+        const picked = await saveDialog({
+          defaultPath: file.filename,
+          filters: spec
+            ? [{ name: spec.filterName, extensions: [spec.extension] }]
+            : undefined,
+        });
+        if (typeof picked !== "string" || picked.length === 0) return;
+        await invoke("save_export", {
+          path: picked,
+          dataBase64: bytesToBase64(file.bytes),
+        });
+      } catch (error) {
+        setExportError(String(error));
+        console.error("Failed to export chat:", error);
+      } finally {
+        setExporting(null);
+      }
+    },
+    [conversation],
+  );
+
   return (
     <aside
       aria-hidden={!open}
@@ -307,20 +375,60 @@ export function DetailPane({
             </div>
           </Row>
 
+          {/* Export the whole chat (issue #25): one dropdown above Brain —
+              picking a format builds the file in the webview and opens the
+              native save dialog. The key remount snaps the launcher back
+              to its placeholder; it is not a setting. */}
+          <Row label="Export">
+            <Select
+              key={exportNonce}
+              disabled={!conversation || exporting !== null}
+              onValueChange={(format) => {
+                setExportNonce((nonce) => nonce + 1);
+                if (format) void runExport(format as ExportFormat);
+              }}
+            >
+              <SelectTrigger aria-label="Export chat as">
+                <SelectValue placeholder={exporting ? "Exporting…" : "Export chat…"} />
+              </SelectTrigger>
+              <SelectContent>
+                {EXPORT_FORMATS.map(({ format, label, extension }) => (
+                  <SelectItem key={format} value={format}>
+                    {label} (.{extension})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {exportError && (
+              <p className="pt-1 text-[11px] text-destructive" role="alert">
+                {exportError}
+              </p>
+            )}
+          </Row>
+
           {/* The brain: a server model or one of the headless CLIs — the
               mode decides how much of the computer it may touch. */}
           <Row label="Brain">
-            <select
-              aria-label="Brain"
+            <Select
               value={conversation?.agent_kind ?? "server"}
               disabled={!conversation}
-              onChange={(event) => void switchBrain(event.target.value)}
-              className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 outline-none disabled:opacity-50"
+              onValueChange={(brain) => void switchBrain(brain)}
             >
-              <option value="server">Server model</option>
-              <option value="claude_code">Claude Code</option>
-              <option value="codex">Codex</option>
-            </select>
+              <SelectTrigger aria-label="Brain">
+                <SelectValue>
+                  {conversation?.agent_kind === "claude_code"
+                    ? "Claude Code"
+                    : conversation?.agent_kind === "codex"
+                      ? "Codex"
+                      : "Server model"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="server">Server model</SelectItem>
+                <SelectItem value="claude_code">Claude Code</SelectItem>
+                <SelectItem value="codex">Codex</SelectItem>
+              </SelectContent>
+            </Select>
           </Row>
 
           {brainError && (
@@ -354,25 +462,30 @@ export function DetailPane({
           ) : (
             <>
               <Row label="Server">
-            <select
-              aria-label="Server"
-              value={conversation?.server_id ?? ""}
+            <Select
+              value={conversation?.server_id != null ? String(conversation.server_id) : undefined}
               disabled={!conversation || servers.length === 0}
-              onChange={(event) => {
-                const serverId = event.target.value ? Number(event.target.value) : null;
+              onValueChange={(serverId) => {
                 // Switching servers invalidates the pinned model.
-                void applySelection(serverId, null);
+                void applySelection(Number(serverId), null);
                 setModels([]);
               }}
-              className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 outline-none disabled:opacity-50"
             >
-              <option value="">{fallbackLabel}</option>
-              {servers.map((server) => (
-                <option key={server.id} value={server.id}>
-                  {server.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label="Server">
+                <SelectValue placeholder={fallbackLabel}>
+                  {conversation?.server_id != null
+                    ? servers.find((server) => server.id === conversation.server_id)?.name
+                    : undefined}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {servers.map((server) => (
+                  <SelectItem key={server.id} value={String(server.id)}>
+                    {server.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Row>
 
           <Row label="Model">
@@ -389,22 +502,27 @@ export function DetailPane({
           {conversation && (
             <>
               <Row label="System prompt">
-                <select
-                  aria-label="System prompt mode"
+                <Select
                   value={sysMode}
-                  onChange={(event) => {
-                    const mode = event.target.value === "custom" ? "custom" : "default";
-                    setSysMode(mode);
-                    if (mode === "default") {
+                  onValueChange={(mode) => {
+                    const next = mode === "custom" ? "custom" : "default";
+                    setSysMode(next);
+                    if (next === "default") {
                       // Leaving Custom clears the prompt right away.
                       void commitSettings({ ...draft, systemPrompt: "" });
                     }
                   }}
-                  className="w-full appearance-none rounded-md border border-input bg-input px-2 py-1.5 outline-none"
                 >
-                  <option value="default">Use default</option>
-                  <option value="custom">Custom…</option>
-                </select>
+                  <SelectTrigger aria-label="System prompt mode">
+                    <SelectValue>
+                      {sysMode === "custom" ? "Custom…" : "Use default"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">Use default</SelectItem>
+                    <SelectItem value="custom">Custom…</SelectItem>
+                  </SelectContent>
+                </Select>
                 {sysMode === "custom" && (
                   <textarea
                     aria-label="System prompt"

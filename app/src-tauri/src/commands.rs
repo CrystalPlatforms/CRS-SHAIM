@@ -217,6 +217,45 @@ pub fn save_attachment(data_url: String) -> CmdResult<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Writes a chat export produced in the webview to the user-picked path
+/// (issue #25). The payload arrives base64-encoded so every byte survives
+/// the JSON bridge — docx/odt/pdf bodies are binary.
+#[tauri::command]
+pub fn save_export(path: String, data_base64: String) -> CmdResult<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| format!("bad export data: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("cannot write export: {e}"))?;
+    Ok(path)
+}
+
+/// Reads a picked file back as a data URL (issue #26): the native file
+/// dialog only hands over paths, and the Natural-mode composer previews
+/// images inline. Non-images are rejected — the composer lists those by
+/// path instead.
+#[tauri::command]
+pub fn read_attachment_data_url(path: String) -> CmdResult<String> {
+    use base64::Engine;
+    let extension = std::path::Path::new(&path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return Err("not a previewable image".into()),
+    };
+    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read file: {e}"))?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 /// Reads an image file back as a data URL (or `None` when unreadable).
 fn image_data_url(path: &Path) -> Option<String> {
     use base64::Engine;

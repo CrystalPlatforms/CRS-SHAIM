@@ -3,14 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  ImagePlus,
   PanelLeftOpen,
   PanelRightOpen,
+  Paperclip,
   Pencil,
   RefreshCw,
   Reply,
   SendHorizontal,
   Square,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -50,6 +51,9 @@ interface ChatPaneProps {
   onOpenDetails: () => void;
   /** Notifies the parent when auto-title (or anything else) changed the list. */
   onConversationsChanged: () => void;
+  /** Deletes a conversation (issue #27) — the parent clears the selection
+   * and drops the sidebar badges with it. */
+  onDelete: (id: number) => Promise<void> | void;
   /** Selects another conversation — used after a fork. */
   onSelectConversation: (id: number) => void;
   /** Pending "scroll to this message" request from a search hit. */
@@ -403,6 +407,7 @@ export function ChatPane({
   detailsOpen,
   onOpenDetails,
   onConversationsChanged,
+  onDelete,
   onSelectConversation,
   jumpTarget,
   onJumpHandled,
@@ -427,6 +432,10 @@ export function ChatPane({
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  /** The conversation waiting for delete confirmation (issue #27) — the
+   * header's Delete button opens the same Enter-confirms dialog the
+   * sidebar uses. */
+  const [deletingConversation, setDeletingConversation] = useState<Conversation | null>(null);
   /** Slash-command / @-file palette above the composer (Agent mode). */
   const [suggestions, setSuggestions] = useState<SuggestionState | null>(null);
   /** Which composer toolbar popover is open. */
@@ -1349,6 +1358,15 @@ export function ChatPane({
     }
   }, [conversation, titleDraft, onConversationsChanged]);
 
+  /** Confirms the header Delete (issue #27) — the parent owns the actual
+   * deletion so the sidebar badges and selection drop with it. */
+  const confirmDeleteConversation = useCallback(() => {
+    if (!deletingConversation) return;
+    const target = deletingConversation;
+    setDeletingConversation(null);
+    void onDelete(target.id);
+  }, [deletingConversation, onDelete]);
+
   // The composer is uncontrolled: after any edit (typing, chip click,
   // Backspace-removed chip) mirror the DOM back into state.
   const syncComposer = useCallback(() => {
@@ -1415,28 +1433,49 @@ export function ChatPane({
     return () => window.clearTimeout(timer);
   }, [jumpTarget, messages, conversation, onJumpHandled]);
 
-  /** Agent pipeline, file picker: the picked files' REAL paths join the
-   * message — no copies, the agent opens exactly those files. */
-  const browseImages = async () => {
+  /** Composer paperclip (issue #26): ONE picker for EVERY file. Agent
+   * pipelines take the picked paths into the message so the CLI opens
+   * exactly those files; Natural chat previews images inline and lists
+   * other files by their path. */
+  const browseAttachments = async () => {
     try {
-      const picked = await open({
-        multiple: true,
-        filters: [
-          {
-            name: "Images",
-            extensions: ["png", "jpg", "jpeg", "webp", "gif"],
-          },
-        ],
-      });
+      const picked = await open({ multiple: true });
       if (!picked) return;
       const paths = Array.isArray(picked) ? picked : [picked];
-      composerRef.current?.focus();
-      for (const path of paths) {
-        document.execCommand("insertText", false, `${path}\n`);
+      const agentPipeline =
+        conversation && (conversation.mode === "agent" || conversation.agent_kind != null);
+      if (agentPipeline) {
+        composerRef.current?.focus();
+        for (const path of paths) {
+          document.execCommand("insertText", false, `${path}\n`);
+        }
+        if (composerRef.current) setDraft(composerText(composerRef.current));
+        return;
       }
-      if (composerRef.current) setDraft(composerText(composerRef.current));
+      // Natural chat: images become inline previews, the rest ride as paths.
+      const previews: string[] = [];
+      let insertedPath = false;
+      for (const path of paths) {
+        if (/\.(png|jpe?g|webp|gif)$/i.test(path)) {
+          try {
+            previews.push(await invoke<string>("read_attachment_data_url", { path }));
+            continue;
+          } catch (err) {
+            console.error("Failed to preview image:", err);
+          }
+        }
+        composerRef.current?.focus();
+        document.execCommand("insertText", false, `${path}\n`);
+        insertedPath = true;
+      }
+      if (previews.length > 0) {
+        setPendingImages((current) => [...current, ...previews]);
+      }
+      if (insertedPath && composerRef.current) {
+        setDraft(composerText(composerRef.current));
+      }
     } catch (err) {
-      console.error("Failed to open image picker:", err);
+      console.error("Failed to open file picker:", err);
     }
   };
 
@@ -1532,7 +1571,34 @@ export function ChatPane({
             {conversation.title}
           </h2>
         )}
-        {!detailsOpen && (
+        {/* The header's own quick actions (issue #27): Rename starts the
+            inline title edit, Delete asks before removing the chat. */}
+        {!titleEditing && (
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+              onClick={startTitleEdit}
+              aria-label="Rename conversation"
+              title="Rename conversation"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+              onClick={() => setDeletingConversation(conversation)}
+              aria-label="Delete conversation"
+              title="Delete conversation"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+            {!detailsOpen && <ShowDetailsButton onClick={onOpenDetails} />}
+          </div>
+        )}
+        {titleEditing && !detailsOpen && (
           <div className="ml-auto shrink-0">
             <ShowDetailsButton onClick={onOpenDetails} />
           </div>
@@ -1672,36 +1738,6 @@ export function ChatPane({
           </div>
         )}
         <div className="flex items-end gap-2">
-          {!editing &&
-            (isAgent || isCliBrain ? (
-              <button
-                type="button"
-                onClick={() => void browseImages()}
-                className="flex h-[38px] w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground"
-                title="Attach images"
-              >
-                <ImagePlus className="h-5 w-5" />
-                <span className="sr-only">Attach images</span>
-              </button>
-            ) : (
-              <label
-                className="flex h-[38px] w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground"
-                title="Attach images"
-              >
-                <ImagePlus className="h-5 w-5" />
-                <span className="sr-only">Attach images</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(event) => {
-                    void attachImages(event.target.files);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-            ))}
           <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card transition-colors focus-within:border-primary/40">
             {/* Slash-command / @-file palette (every mode) */}
             {suggestions && suggestions.items.length > 0 && (
@@ -1934,6 +1970,20 @@ export function ChatPane({
                 </div>
               )}
 
+              {/* The paperclip (issue #26): borderless, lives inside the
+                  input before the Mode button — one picker for every file. */}
+              {!editing && (
+                <button
+                  type="button"
+                  disabled={isStreaming}
+                  onClick={() => void browseAttachments()}
+                  aria-label="Attach files"
+                  title="Attach files"
+                  className="flex items-center rounded-md px-1.5 py-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+              )}
               <button
                 type="button"
                 disabled={isStreaming}
@@ -2038,6 +2088,33 @@ export function ChatPane({
               Cancel
             </Button>
             <Button variant="destructive" autoFocus onClick={() => void confirmDelete()}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete-conversation confirmation (issue #27) — the header's
+          Delete button; Enter confirms, never cancels. */}
+      <Dialog
+        open={deletingConversation !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeletingConversation(null);
+        }}
+      >
+        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Delete conversation?</DialogTitle>
+            <DialogDescription>
+              “{deletingConversation?.title}” and all of its messages will be
+              permanently removed. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeletingConversation(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" autoFocus onClick={confirmDeleteConversation}>
               Delete
             </Button>
           </DialogFooter>

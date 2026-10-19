@@ -61,6 +61,8 @@ pub fn run() {
             commands::set_conversation_brain,
             commands::list_agent_skills,
             commands::save_attachment,
+            commands::save_export,
+            commands::read_attachment_data_url,
             commands::list_cli_models,
             commands::list_messages,
             commands::get_settings,

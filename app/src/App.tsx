@@ -150,6 +150,7 @@ export default function App() {
         detailsOpen={detailsOpen}
         onOpenDetails={() => setDetailsOpen(true)}
         onConversationsChanged={() => void refresh()}
+        onDelete={handleDelete}
         onSelectConversation={setSelectedId}
         jumpTarget={jumpTarget}
         onJumpHandled={() => setJumpTarget(null)}

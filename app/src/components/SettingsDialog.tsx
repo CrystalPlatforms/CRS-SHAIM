@@ -8,6 +8,13 @@ import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -367,17 +374,20 @@ function ServerFormDialog({
               />
             </label>
 
-            <label className="block space-y-1">
+            <div className="block space-y-1">
               <span className="text-xs text-muted-foreground">Kind</span>
-              <select
-                value={kind}
-                onChange={(event) => setKind(event.target.value as ServerKind)}
-                className="w-full appearance-none rounded-md border border-input bg-input px-2 py-2 text-sm outline-none"
-              >
-                <option value="ollama">Ollama</option>
-                <option value="openai_compatible">OpenAI-compatible</option>
-              </select>
-            </label>
+              <Select value={kind} onValueChange={(next) => setKind(next as ServerKind)}>
+                <SelectTrigger aria-label="Server kind" className="py-2 text-sm">
+                  <SelectValue>
+                    {kind === "ollama" ? "Ollama" : "OpenAI-compatible"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="text-sm">
+                  <SelectItem value="ollama">Ollama</SelectItem>
+                  <SelectItem value="openai_compatible">OpenAI-compatible</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">Base URL</span>
@@ -860,51 +870,69 @@ function DefaultsTab({ open }: { open: boolean }) {
 
   return (
     <div className="space-y-3">
-      <label className="block space-y-1">
+      <div className="block space-y-1">
         <span className="text-xs text-muted-foreground">Default server</span>
-        <select
-          aria-label="Default server"
-          value={settings?.default_server_id ?? ""}
-          onChange={(event) =>
-            void save(event.target.value ? Number(event.target.value) : null, null)
+        <Select
+          value={settings?.default_server_id != null ? String(settings.default_server_id) : "none"}
+          onValueChange={(serverId) =>
+            void save(serverId === "none" ? null : Number(serverId), null)
           }
-          className="w-full appearance-none rounded-md border border-input bg-input px-2 py-2 text-sm outline-none"
         >
-          <option value="">— none —</option>
-          {servers.map((server) => (
-            <option key={server.id} value={server.id}>
-              {server.name}
-            </option>
-          ))}
-        </select>
-      </label>
+          <SelectTrigger aria-label="Default server" className="py-2 text-sm">
+            <SelectValue>
+              {settings?.default_server_id != null
+                ? servers.find((server) => server.id === settings.default_server_id)?.name ??
+                  "— none —"
+                : "— none —"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent className="text-sm">
+            <SelectItem value="none">— none —</SelectItem>
+            {servers.map((server) => (
+              <SelectItem key={server.id} value={String(server.id)}>
+                {server.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
-      <label className="block space-y-1">
+      <div className="block space-y-1">
         <span className="text-xs text-muted-foreground">Default model</span>
         <div className="relative">
-          <select
-            aria-label="Default model"
-            value={settings?.default_model_id ?? ""}
+          <Select
+            value={settings?.default_model_id ?? "none"}
             disabled={loadingModels || models.length === 0}
-            onChange={(event) =>
-              void save(settings?.default_server_id ?? null, event.target.value || null)
+            onValueChange={(modelId) =>
+              void save(settings?.default_server_id ?? null, modelId === "none" ? null : modelId)
             }
-            className="w-full appearance-none rounded-md border border-input bg-input px-2 py-2 text-sm outline-none disabled:opacity-50"
           >
-            <option value="">
-              {loadingModels ? "Loading models…" : models.length === 0 ? "No models" : "— none —"}
-            </option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.id}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label="Default model" className="py-2 text-sm">
+              <SelectValue>
+                {settings?.default_model_id ??
+                  (loadingModels
+                    ? "Loading models…"
+                    : models.length === 0
+                      ? "No models"
+                      : "— none —")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent className="text-sm">
+              <SelectItem value="none">
+                {loadingModels ? "Loading models…" : models.length === 0 ? "No models" : "— none —"}
+              </SelectItem>
+              {models.map((model) => (
+                <SelectItem key={model.id} value={model.id}>
+                  {model.id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {loadingModels && (
-            <RefreshCw className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+            <RefreshCw className="pointer-events-none absolute right-7 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
           )}
         </div>
-      </label>
+      </div>
 
       {saved && <p className="text-xs text-primary">Saved.</p>}
       <p className="text-xs text-muted-foreground">
