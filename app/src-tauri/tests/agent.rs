@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use shaim_lib::agent::{
     adapter_for, AgentAccess, AgentAdapter, AgentError, AgentEvent, AgentRunner, Segment,
+    StdinHandle,
 };
 use shaim_lib::gateway::AbortFlag;
 use shaim_lib::store::AgentKind;
@@ -170,6 +171,7 @@ async fn claude_fixture_parses_into_messages_and_activity_blocks() {
         None,
         &[],
         &AbortFlag::new(),
+        &StdinHandle::default(),
         |event| events.push(event),
     )
     .await
@@ -273,6 +275,7 @@ async fn codex_fixture_parses_through_the_same_runner_path() {
         None,
         &[],
         &AbortFlag::new(),
+        &StdinHandle::default(),
         |event| events.push(event),
     )
     .await
@@ -333,6 +336,7 @@ async fn stop_terminates_the_spawned_process() {
         None,
         &[],
         &abort,
+        &StdinHandle::default(),
         |_event| {},
     )
     .await
@@ -439,6 +443,7 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
         None,
         &[],
         &AbortFlag::new(),
+        &StdinHandle::default(),
         |_event| {},
     )
     .await
@@ -472,6 +477,7 @@ async fn missing_binary_returns_a_structured_error() {
         None,
         &[],
         &AbortFlag::new(),
+        &StdinHandle::default(),
         |_event| {},
     )
     .await
@@ -507,4 +513,33 @@ fn cli_model_detection_lists_real_models() {
     let claude = shaim_lib::commands::list_cli_models("claude_code".into()).unwrap();
     println!("claude models: {claude:?}");
     assert!(claude.contains(&"default".to_string()));
+}
+
+#[test]
+fn control_requests_parse_into_permission_events() {
+    // Real wire shape, recorded from claude 2.1.303 with
+    // --permission-prompt-tool stdio (issue #28).
+    let mut adapter = adapter_for(AgentKind::ClaudeCode);
+    let line = r#"{"type":"control_request","request_id":"62c35e8a-75d2","request":{"subtype":"can_use_tool","tool_name":"Write","display_name":"Write","input":{"file_path":"/tmp/probe.txt","content":"hello"},"description":"probe.txt","permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"call_bad3fe3b"}}"#;
+    let events = adapter.parse_line(line);
+    match events.as_slice() {
+        [AgentEvent::PermissionRequest {
+            request_id,
+            tool_name,
+            input_json,
+        }] => {
+            assert_eq!(request_id, "62c35e8a-75d2");
+            assert_eq!(tool_name, "Write");
+            let input: serde_json::Value =
+                serde_json::from_str(input_json).expect("input stays compact JSON");
+            assert_eq!(input["file_path"], "/tmp/probe.txt");
+        }
+        other => panic!("expected one PermissionRequest, got {other:?}"),
+    }
+
+    // Other control subtypes (hooks etc.) are not Shaim's to answer.
+    let other_control = r#"{"type":"control_request","request_id":"x","request":{"subtype":"hook_callback"}}"#;
+    assert!(adapter.parse_line(other_control).is_empty());
+    // Garbage never panics.
+    assert!(adapter.parse_line("not json").is_empty());
 }

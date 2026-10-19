@@ -204,19 +204,23 @@ fn no_skills_in_play_leaves_the_system_prompt_untouched() {
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
 
+    // The UI-directives hint (issue #22) always rides on a request — the
+    // assistant cannot trigger the rich elements without knowing the syntax.
     let options = injected_prompt(&store, &skills, conv, None);
     assert_eq!(
-        options.system_prompt, None,
-        "no skills — no prompt invented"
+        options.system_prompt.as_deref(),
+        Some(shaim_lib::commands::UI_DIRECTIVES_HINT),
+        "no skills — only the UI hint rides along"
     );
 
     store
         .set_conversation_settings(conv, Some("You are terse."), None, None)
         .expect("settings should save");
     let options = injected_prompt(&store, &skills, conv, None);
-    assert_eq!(
-        options.system_prompt.as_deref(),
-        Some("You are terse."),
-        "a user prompt passes through byte-identical"
+    let prompt = options.system_prompt.expect("prompt expected");
+    assert!(
+        prompt.starts_with("You are terse.\n\n---\n\n")
+            && prompt.ends_with(shaim_lib::commands::UI_DIRECTIVES_HINT),
+        "the user prompt passes through first, the hint trails: {prompt}"
     );
 }

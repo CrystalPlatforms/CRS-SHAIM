@@ -183,6 +183,48 @@ pub struct SearchHit {
     pub created_at: i64,
 }
 
+/// What an allowed rule names. `Command` matches a shell command string,
+/// `File` a project file path, `Tool` a whole tool by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowedKind {
+    Command,
+    File,
+    Tool,
+}
+
+impl AllowedKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::File => "file",
+            Self::Tool => "tool",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "command" => Ok(Self::Command),
+            "file" => Ok(Self::File),
+            "tool" => Ok(Self::Tool),
+            other => Err(StoreError::UnknownKind(other.to_string())),
+        }
+    }
+}
+
+/// One standing permission (issue #28). `conversation_id = None` is a global
+/// rule — the "Allow permanently" level shown in Settings → Allowed;
+/// `Some(id)` is a conversation-scoped rule — the "Allow for this
+/// conversation" level, never surfaced in Settings.
+#[derive(Debug, Clone, Serialize)]
+pub struct AllowedRule {
+    pub id: i64,
+    pub conversation_id: Option<i64>,
+    pub kind: String,
+    pub pattern: String,
+    pub created_at: i64,
+}
+
 /// Column lists shared by RETURNING/SELECT so every read maps in one order.
 const CONVERSATION_COLUMNS: &str =
     "id, title, server_id, model_id, mode, agent_kind, project_path, system_prompt, temperature, context_len, thinking, created_at, updated_at";
@@ -190,6 +232,7 @@ const MESSAGE_COLUMNS: &str =
     "id, conversation_id, role, content, thinking, images, reaction, skill_name, created_at";
 const SKILL_COLUMNS: &str =
     "id, name, description, kind, enabled, path, size_bytes, created_at";
+const ALLOWED_RULE_COLUMNS: &str = "id, conversation_id, kind, pattern, created_at";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -247,8 +290,17 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+CREATE TABLE IF NOT EXISTS allowed_rules (
+    id              INTEGER PRIMARY KEY,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('command', 'file', 'tool')),
+    pattern         TEXT NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+CREATE INDEX IF NOT EXISTS idx_allowed_rules_conversation ON allowed_rules(conversation_id);
 
 -- Full-text search over message bodies (external-content FTS5, kept in sync
 -- by triggers so it can never drift from `messages`).
@@ -695,6 +747,63 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    // ---- Allowed rules (issue #28) -----------------------------------------
+
+    /// Records one standing permission. `conversation_id = None` marks the
+    /// global "Allow permanently" level; `Some(id)` scopes the rule to one
+    /// conversation ("Allow for this conversation").
+    pub fn add_allowed_rule(
+        &self,
+        conversation_id: Option<i64>,
+        kind: AllowedKind,
+        pattern: &str,
+    ) -> Result<AllowedRule> {
+        self.conn.query_row(
+            &format!(
+                "INSERT INTO allowed_rules (conversation_id, kind, pattern)
+                 VALUES (?1, ?2, ?3)
+                 RETURNING {ALLOWED_RULE_COLUMNS}"
+            ),
+            rusqlite::params![conversation_id, kind.as_str(), pattern],
+            row_to_allowed_rule,
+        )
+        .map_err(StoreError::from)
+    }
+
+    /// Global rules only — the Settings → Allowed list.
+    pub fn list_global_allowed_rules(&self) -> Result<Vec<AllowedRule>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ALLOWED_RULE_COLUMNS} FROM allowed_rules
+             WHERE conversation_id IS NULL ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], row_to_allowed_rule)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Global rules plus the conversation's own — the effective set the
+    /// permission gate consults before showing an ask to the user.
+    pub fn rules_for_conversation(&self, conversation_id: i64) -> Result<Vec<AllowedRule>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {ALLOWED_RULE_COLUMNS} FROM allowed_rules
+             WHERE conversation_id IS NULL OR conversation_id = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([conversation_id], row_to_allowed_rule)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Removes one rule (Settings → Allowed delete).
+    pub fn delete_allowed_rule(&self, id: i64) -> Result<()> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM allowed_rules WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
     // ---- Messages ---------------------------------------------------------
 
     /// Inserts a message with the full payload used by chat (thinking, image
@@ -1011,6 +1120,16 @@ fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
         path: row.get(5)?,
         size_bytes: row.get(6)?,
         created_at: row.get(7)?,
+    })
+}
+
+fn row_to_allowed_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<AllowedRule> {
+    Ok(AllowedRule {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        kind: row.get(2)?,
+        pattern: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 

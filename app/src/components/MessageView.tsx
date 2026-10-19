@@ -4,6 +4,7 @@ import type { Message } from "@/types";
 import { isReasoningTitle, parseActivity } from "@/types";
 import { MarkdownMessage, ThinkingBlock } from "@/components/Markdown";
 import { ActivityBlock } from "@/components/ActivityBlock";
+import { parseTodoWrite } from "@/lib/shaimBlocks";
 import { cn } from "@/lib/utils";
 import {
   ContextMenu,
@@ -136,6 +137,18 @@ export function MessageView({
       // text (no frame), real tool calls as collapsible activity blocks.
       (() => {
         const activity = parseActivity(message.content);
+        // Claude's TodoWrite and shaim-todos feed the pinned goal-progress
+        // widget only — rendering every update here would stack a block
+        // per step (issue #22 feedback). They leave no trace in the thread.
+        if (parseTodoWrite(activity.detail)) {
+          return (
+            <div
+              data-message-id={message.id}
+              aria-hidden
+              className="hidden"
+            />
+          );
+        }
         return (
           <div
             data-message-id={message.id}
@@ -165,7 +178,7 @@ export function MessageView({
           highlighted && "animate-highlight-pulse"
         )}
       >
-        <div className="max-w-[85%] min-w-0">
+        <div className="max-w-[85%] min-w-0 has-[[data-shaim-table]]:max-w-full">
           {message.thinking && <ThinkingBlock thinking={message.thinking} />}
           <MarkdownMessage content={message.content} />
           {message.images.length > 0 && (

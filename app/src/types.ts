@@ -78,6 +78,14 @@ export type ChatStreamEvent =
   | { type: "activity_append"; detail: string }
   | { type: "activity_retitle"; title: string }
   | { type: "activity_end" }
+  /** The agent asks to run something (issue #28) — the composer swaps to
+   * the allow buttons until `respond_permission` answers. */
+  | {
+      type: "permission_request";
+      request_id: string;
+      tool_name: string;
+      target: string;
+    }
   | { type: "title_changed"; title: string }
   | { type: "done"; message_id: number; content: string; thinking: string; aborted: boolean }
   /** Agent runs end with a full history push plus this marker. */
@@ -158,6 +166,17 @@ export const AGENT_COMMANDS: Record<AgentKind, { cmd: string; hint: string }[]> 
 export interface SkillInfo {
   name: string;
   description: string;
+}
+
+/** One standing permission rule (issue #28). `conversation_id` is null for
+ * the global "Allow permanently" rules shown in Settings → Allowed; a
+ * conversation-scoped rule never appears there. */
+export interface AllowedRule {
+  id: number;
+  conversation_id: number | null;
+  kind: "command" | "file" | "tool";
+  pattern: string;
+  created_at: number;
 }
 
 /** One skill in Shaim's own library, as shown in Settings → Skills. Enabled

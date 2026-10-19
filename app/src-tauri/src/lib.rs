@@ -24,6 +24,11 @@ pub struct AppState {
     pub next_generation: AtomicU64,
     /// Stop signals for generations currently streaming.
     pub generations: Mutex<HashMap<u64, AbortFlag>>,
+    /// Permission asks (issue #28) waiting for the user's decision, keyed by
+    /// request id. Both pipelines register here: the CLI agent path (the
+    /// answer travels to the child's stdin) and the server tool loop (the
+    /// answer travels through a oneshot).
+    pub permissions: Mutex<HashMap<String, commands::PendingPermission>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,6 +46,7 @@ pub fn run() {
                 gateway: Gateway::new()?,
                 next_generation: AtomicU64::new(1),
                 generations: Mutex::new(HashMap::new()),
+                permissions: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -86,6 +92,9 @@ pub fn run() {
             commands::save_skill_content,
             commands::rename_skill,
             commands::delete_skill,
+            commands::list_allowed_commands,
+            commands::delete_allowed_command,
+            commands::respond_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

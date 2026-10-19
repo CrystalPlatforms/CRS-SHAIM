@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Reply,
   SendHorizontal,
+  ShieldAlert,
   Square,
   Trash2,
   X,
@@ -31,16 +32,18 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MessageView, PendingImages } from "@/components/MessageView";
+import { StreamingText } from "@/components/StreamingText";
 import { StreamStatus } from "@/components/loaders/StreamStatus";
 import { AgentLoader } from "@/components/loaders/AgentLoader";
 import { ActivityBlock } from "@/components/ActivityBlock";
 import { paletteSelection, skillRows } from "@/lib/skillPalette";
+import { extractLastShaimTodos, parseTodoWrite, type TodoItem } from "@/lib/shaimBlocks";
+import { GoalProgressWidget } from "@/components/GoalProgress";
 import { cn } from "@/lib/utils";
 
 interface ChatPaneProps {
@@ -109,6 +112,13 @@ interface StreamState {
   segments: StreamSegment[];
 }
 
+/** One permission ask waiting for the user's decision (issue #28). */
+interface PermissionAsk {
+  requestId: string;
+  toolName: string;
+  target: string;
+}
+
 /** One conversation's in-flight generation (issue #21): the buffer keeps
  * filling while the user reads another chat, and coming back resumes the
  * live view from exactly where the stream stands. */
@@ -118,6 +128,13 @@ interface ConversationStream {
   generationId: number | null;
   /** The last failure — resurfaced when the conversation is reopened. */
   error: string | null;
+  /** The open permission ask (issue #28) — resurfaced on reopen too. */
+  permission: PermissionAsk | null;
+  /** Assistant-enqueued follow-ups (shaim-queue, issue #22) waiting to be
+   * sent after the current generation ends. */
+  queue: string[];
+  /** Which send pipeline the queue rides on — set by the last send(). */
+  sendMode: "agent" | "chat";
 }
 
 /** A message being edited: sending continues the conversation from it. */
@@ -171,8 +188,7 @@ interface SuggestionState {
 }
 
 /** Snippet for the reply chip: the first non-empty line, char-safe cut. */
-function snippetOf(content: string): string {
-  const MAX = 64;
+function snippetOf(content: string): string {  const MAX = 64;
   const firstLine =
     content
       .split("\n")
@@ -205,6 +221,23 @@ function lastActivity(segments: StreamSegment[]): Extract<StreamSegment, { kind:
   for (let i = segments.length - 1; i >= 0; i--) {
     const segment = segments[i];
     if (segment.kind === "activity") return segment;
+  }
+  return null;
+}
+
+/** The assistant's latest goal-progress state from the live buffer (issue
+ * #22): the newest TodoWrite activity or shaim-todos block wins. Reading
+ * backwards keeps the widget on "what the agent is doing now". */
+function latestTodos(segments: StreamSegment[]): TodoItem[] | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
+    if (segment.kind === "activity") {
+      const todos = parseTodoWrite(segment.detail);
+      if (todos) return todos;
+    } else {
+      const todos = extractLastShaimTodos(segment.text);
+      if (todos) return todos;
+    }
   }
   return null;
 }
@@ -451,6 +484,14 @@ export function ChatPane({
   const [invokedSkill, setInvokedSkill] = useState<{ id: number; name: string } | null>(
     null,
   );
+  /** The displayed conversation's open permission ask (issue #28) — while
+   * one stands, the composer swaps to the allow buttons. */
+  const [permission, setPermission] = useState<PermissionAsk | null>(null);
+  /** The displayed conversation's queued follow-ups (issue #22). */
+  const [queue, setQueue] = useState<string[]>([]);
+  /** The assistant's latest goal-progress state (issue #22) — the pinned
+   * widget above the composer, only while this chat is streaming. */
+  const [streamTodos, setStreamTodos] = useState<TodoItem[] | null>(null);
 
   /** Per-conversation in-flight generations (issue #21): switching chats
    * never interrupts one. Each entry owns its buffer, generation id and
@@ -463,6 +504,8 @@ export function ChatPane({
   const displayedIdRef = useRef<number | null>(null);
   /** Guards stale '@' file queries — only the newest detection wins. */
   const suggestionRequestIdRef = useRef(0);
+  /** Queue flusher, wired after runCommand (the stream handler fires it). */
+  const flushQueueRef = useRef<((conversationId: number) => void) | null>(null);
 
   const isCliBrain = conversation?.agent_kind != null;
 
@@ -517,6 +560,9 @@ export function ChatPane({
         streaming: false,
         generationId: null,
         error: null,
+        permission: null,
+        queue: [],
+        sendMode: "chat",
       };
       streamsRef.current.set(conversationId, entry);
     }
@@ -635,6 +681,9 @@ export function ChatPane({
     setError(null);
     setPendingImages([]);
     setDraft("");
+    setPermission(null);
+    setQueue([]);
+    setStreamTodos(null);
     if (composerRef.current) composerRef.current.textContent = "";
     setEditing(null);
     setReplying(null);
@@ -651,8 +700,11 @@ export function ChatPane({
         thinking: entry.buffer.thinking,
         segments: [...entry.buffer.segments],
       });
+      setStreamTodos(latestTodos(entry.buffer.segments));
     }
     if (entry?.error) setError(entry.error);
+    if (entry?.permission) setPermission(entry.permission);
+    if (entry && entry.queue.length > 0) setQueue([...entry.queue]);
 
     let cancelled = false;
     invoke<Message[]>("list_messages", { conversationId: conversation.id })
@@ -676,6 +728,7 @@ export function ChatPane({
       thinking: entry.buffer.thinking,
       segments: [...entry.buffer.segments],
     });
+    setStreamTodos(latestTodos(entry.buffer.segments));
   }, []);
 
   const reloadMessages = useCallback(async (conversationId: number) => {
@@ -718,11 +771,14 @@ export function ChatPane({
       entry.error = null;
       entry.generationId = null;
       entry.streaming = true;
+      entry.permission = null;
       onStreamingChanged(conversationId, true);
       onErrorChanged(conversationId, false);
       setError(null);
       if (displayedIdRef.current === conversationId) {
         setStream({ thinking: "", segments: [] });
+        setPermission(null);
+        setStreamTodos(null);
         // Sending always means "show me the latest" — even if the user had
         // scrolled up, ride down to the new message.
         stickToBottomRef.current = true;
@@ -804,12 +860,26 @@ export function ChatPane({
             if (target) target.open = false;
             break;
           }
+          case "permission_request":
+            // The composer swaps to the allow buttons until the user
+            // answers (issue #28). Background conversations resurface the
+            // ask when reopened.
+            live.permission = {
+              requestId: event.request_id,
+              toolName: event.tool_name,
+              target: event.target,
+            };
+            if (displayedIdRef.current === conversationId) {
+              setPermission(live.permission);
+            }
+            break;
           case "title_changed":
             onConversationsChanged();
             break;
           case "done": {
             live.streaming = false;
             live.generationId = null;
+            live.permission = null;
             if (displayedIdRef.current === conversationId) {
               setMessages((current) => [
                 ...current,
@@ -826,6 +896,14 @@ export function ChatPane({
                 },
               ]);
               setStream(null);
+              setPermission(null);
+              setStreamTodos(null);
+            }
+            // The user's queued messages (issue #22) go out once the
+            // generation finished naturally — never mid-work, never after
+            // Stop or an error.
+            if (!event.aborted && live.queue.length > 0) {
+              window.setTimeout(() => flushQueueRef.current?.(conversationId), 700);
             }
             onStreamingChanged(conversationId, false);
             if (event.aborted) onConversationsChanged();
@@ -835,11 +913,17 @@ export function ChatPane({
             // The persisted segments already arrived as a history push.
             live.streaming = false;
             live.generationId = null;
+            live.permission = null;
             if (displayedIdRef.current === conversationId) {
               setStream(null);
+              setPermission(null);
+              setStreamTodos(null);
               if (event.error) setError(event.error);
             }
             if (event.error) live.error = event.error;
+            if (!event.error && live.queue.length > 0) {
+              window.setTimeout(() => flushQueueRef.current?.(conversationId), 700);
+            }
             onStreamingChanged(conversationId, false);
             onErrorChanged(conversationId, event.error != null);
             onConversationsChanged();
@@ -849,9 +933,12 @@ export function ChatPane({
             live.streaming = false;
             live.generationId = null;
             live.error = event.message;
+            live.permission = null;
             if (displayedIdRef.current === conversationId) {
               setError(event.message);
               setStream(null);
+              setPermission(null);
+              setStreamTodos(null);
               // A failed/partial stream persists what arrived — reload to
               // show it.
               void reloadMessages(conversationId);
@@ -881,6 +968,85 @@ export function ChatPane({
         });
     },
     [entryFor, onConversationsChanged, onErrorChanged, onStreamingChanged, reloadMessages, scrollToBottom],
+  );
+
+  /** Sends the head of the assistant's queue (issue #22) — called from the
+   * stream handler after a generation ends; each send streams on its own. */
+  const flushQueue = useCallback(
+    (conversationId: number) => {
+      const entry = streamsRef.current.get(conversationId);
+      if (!entry || entry.streaming || entry.queue.length === 0) return;
+      const text = entry.queue.shift() ?? "";
+      if (displayedIdRef.current === conversationId) setQueue([...entry.queue]);
+      runCommand(
+        conversationId,
+        entry.sendMode === "agent" ? "send_agent_message" : "send_message",
+        { content: text, images: [], skillId: null },
+      );
+    },
+    [runCommand],
+  );
+  useEffect(() => {
+    flushQueueRef.current = flushQueue;
+  }, [flushQueue]);
+
+  /** Removes one queued follow-up before it goes out. */
+  const removeQueued = useCallback((index: number) => {
+    const id = displayedIdRef.current;
+    if (id === null) return;
+    const entry = streamsRef.current.get(id);
+    if (!entry) return;
+    entry.queue.splice(index, 1);
+    setQueue([...entry.queue]);
+  }, []);
+
+  /** A queued chip the user clicked — opens the edit dialog. */
+  const [editingQueued, setEditingQueued] = useState<number | null>(null);
+  const [queuedDraft, setQueuedDraft] = useState("");
+
+  const openQueuedEdit = useCallback((index: number) => {
+    const entry = displayedIdRef.current !== null
+      ? streamsRef.current.get(displayedIdRef.current)
+      : undefined;
+    if (!entry) return;
+    setQueuedDraft(entry.queue[index] ?? "");
+    setEditingQueued(index);
+  }, []);
+
+  /** Saves the edited queued message in place — order is untouched. */
+  const saveQueuedEdit = useCallback(() => {
+    const id = displayedIdRef.current;
+    if (id === null || editingQueued === null) return;
+    const entry = streamsRef.current.get(id);
+    const text = queuedDraft.trim();
+    if (entry && text.length > 0) {
+      entry.queue[editingQueued] = text;
+      setQueue([...entry.queue]);
+    }
+    setEditingQueued(null);
+  }, [editingQueued, queuedDraft]);
+
+  /** The user's answer to a permission ask (issue #28): the backend writes
+   * the decision to the waiting agent; `remember` stores a standing rule. */
+  const answerPermission = useCallback(
+    async (ask: PermissionAsk, allow: boolean, remember: "conversation" | "global" | null) => {
+      const id = displayedIdRef.current;
+      const entry = id !== null ? streamsRef.current.get(id) : undefined;
+      if (entry) entry.permission = null;
+      setPermission(null);
+      try {
+        await invoke("respond_permission", {
+          requestId: ask.requestId,
+          allow,
+          remember,
+          conversationId: id,
+        });
+      } catch (err) {
+        console.error("Failed to answer permission:", err);
+        setError(String(err));
+      }
+    },
+    [],
   );
 
   /** Drops every ask chip — DOM first, then the mirrored state. */
@@ -1162,9 +1328,6 @@ export function ChatPane({
   const send = useCallback(() => {
     if (!conversation) return;
     if (conversation.mode === "agent" && !conversation.project_path) return;
-    // This chat may still be generating in the background (issue #21) —
-    // keep the composer intact instead of silently eating the message.
-    if (streamsRef.current.get(conversation.id)?.streaming) return;
     const text = draft.trim();
     if (text.length === 0 && pendingImages.length === 0) return;
 
@@ -1176,6 +1339,24 @@ export function ChatPane({
     const body = composerRef.current
       ? composerMessage(composerRef.current, quoteFor)
       : text;
+
+    // While this chat generates, the message JOINS THE QUEUE (issue #22,
+    // assistant-ui style): the agent reads it after the current work ends —
+    // never in the middle of a step.
+    if (streamsRef.current.get(conversation.id)?.streaming) {
+      const entry = entryFor(conversation.id);
+      entry.queue.push(body);
+      setQueue([...entry.queue]);
+      setDraft("");
+      setPendingImages([]);
+      clearAsks();
+      setReplying(null);
+      setInvokedSkill(null);
+      setSuggestions(null);
+      if (composerRef.current) composerRef.current.textContent = "";
+      return;
+    }
+
     const sentText =
       replying && body.length > 0 ? `${replying.quote}\n\n${body}` : body;
     const sentImages = pendingImages;
@@ -1190,7 +1371,12 @@ export function ChatPane({
     // Route by brain: server models in Natural chat through the gateway;
     // CLI brains and Agent mode (any brain) go through the agent pipeline.
     // An invoked skill is one-shot: it rides on exactly this send.
-    if (conversation.mode === "agent" || conversation.agent_kind != null) {
+    const pipeline =
+      conversation.mode === "agent" || conversation.agent_kind != null
+        ? "agent"
+        : "chat";
+    entryFor(conversation.id).sendMode = pipeline;
+    if (pipeline === "agent") {
       runCommand(conversation.id, "send_agent_message", {
         content: sentText,
         images: sentImages,
@@ -1203,7 +1389,7 @@ export function ChatPane({
         skillId: invokedSkillId,
       });
     }
-  }, [conversation, draft, pendingImages, asks, replying, invokedSkill, clearAsks, runCommand]);
+  }, [conversation, draft, pendingImages, asks, replying, invokedSkill, clearAsks, runCommand, entryFor]);
 
   /** Composer toolbar: Natural ↔ Agent, immediately — the folder, if
    * missing, is picked right where the folder button is. */
@@ -1699,6 +1885,9 @@ export function ChatPane({
           className="mb-2 px-1"
           dotClassName="h-[3px] w-[3px]"
         />
+        {/* The assistant's live goal progress (issue #22): pinned under the
+            loader, above the input — what the agent is doing right now. */}
+        {isStreaming && streamTodos && <GoalProgressWidget items={streamTodos} />}
         {editing && (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
             <Pencil className="h-3.5 w-3.5 shrink-0" />
@@ -1737,7 +1926,95 @@ export function ChatPane({
             </Button>
           </div>
         )}
+        {/* Queued follow-ups (issue #22): the assistant's shaim-queue items
+            wait here and go out one by one once the generation ends. */}
+        {queue.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
+            <span className="text-[11px] text-muted-foreground">
+              Queued:
+            </span>
+            {queue.map((text, index) => (
+              <button
+                key={index}
+                type="button"
+                title="Click to edit · the agent reads it after the current step"
+                onClick={() => openQueuedEdit(index)}
+                className="inline-flex max-w-[280px] cursor-pointer items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] hover:border-primary/60"
+              >
+                <span className="min-w-0 truncate">{text}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Remove queued message ${index + 1}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeQueued(index);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.stopPropagation();
+                      removeQueued(index);
+                    }
+                  }}
+                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                >
+                  <X className="h-3 w-3" />
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Edit a queued message in place (issue #22 feedback): click the
+            chip, change the text, save — order and removal stay untouched. */}
+        <Dialog
+          open={editingQueued !== null}
+          onOpenChange={(open) => {
+            if (!open) setEditingQueued(null);
+          }}
+        >
+          <DialogContent
+            aria-describedby={undefined}
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <DialogHeader>
+              <DialogTitle>Edit queued message</DialogTitle>
+            </DialogHeader>
+            <textarea
+              value={queuedDraft}
+              onChange={(event) => setQueuedDraft(event.target.value)}
+              rows={4}
+              aria-label="Queued message text"
+              className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  saveQueuedEdit();
+                }
+              }}
+            />
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setEditingQueued(null)}>
+                Cancel
+              </Button>
+              <Button
+                autoFocus
+                disabled={queuedDraft.trim().length === 0}
+                onClick={saveQueuedEdit}
+              >
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <div className="flex items-end gap-2">
+          {permission ? (
+            <PermissionAskPanel
+              ask={permission}
+              onAnswer={(allow, remember) =>
+                void answerPermission(permission, allow, remember)
+              }
+            />
+          ) : (
           <div className="relative min-w-0 flex-1 rounded-lg border border-border bg-card transition-colors focus-within:border-primary/40">
             {/* Slash-command / @-file palette (every mode) */}
             {suggestions && suggestions.items.length > 0 && (
@@ -1791,9 +2068,11 @@ export function ChatPane({
                 <span className="pointer-events-none absolute left-3 top-3 text-sm text-muted-foreground">
                   {editing
                     ? "Edit your message…"
-                    : isAgent
-                      ? "Describe the task for the agent…"
-                      : "Write a message…"}
+                    : isStreaming
+                      ? "The agent is working — Enter queues your message for the next step…"
+                      : isAgent
+                        ? "Describe the task for the agent…"
+                        : "Write a message…"}
                 </span>
               )}
               <div
@@ -2064,6 +2343,7 @@ export function ChatPane({
               </div>
             </div>
           </div>
+          )}
         </div>
       </footer>
 
@@ -2075,13 +2355,12 @@ export function ChatPane({
           if (!open) setDeleting(null);
         }}
       >
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Delete message?</DialogTitle>
-            <DialogDescription>
-              This message will be permanently removed from the conversation.
-              This cannot be undone.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
@@ -2102,13 +2381,12 @@ export function ChatPane({
           if (!open) setDeletingConversation(null);
         }}
       >
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Delete conversation?</DialogTitle>
-            <DialogDescription>
-              “{deletingConversation?.title}” and all of its messages will be
-              permanently removed. This cannot be undone.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeletingConversation(null)}>
@@ -2128,13 +2406,12 @@ export function ChatPane({
           if (!open) setRemovingAsk(null);
         }}
       >
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Remove quoted selection?</DialogTitle>
-            <DialogDescription>
-              “{removingAsk?.snippet}” will no longer travel with your
-              message.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRemovingAsk(null)}>
@@ -2154,12 +2431,12 @@ export function ChatPane({
           if (!open) setRemovingSkill(null);
         }}
       >
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Remove skill?</DialogTitle>
-            <DialogDescription>
-              /{removingSkill} will no longer travel with your next message.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRemovingSkill(null)}>
@@ -2338,13 +2615,97 @@ function ModelPopup({
   );
 }
 
-/** The in-flight stream: plain streaming text pieces and live activity
- * blocks, no chrome — the phase loader lives pinned above the composer.
- * Each new piece fades into place as it appears. */
+/** Human verb for a permission ask: what the agent wants to do. */
+function permissionVerb(toolName: string): string {
+  if (toolName === "Bash" || toolName === "run_command") {
+    return "run this command";
+  }
+  if (
+    toolName === "Write" ||
+    toolName === "Edit" ||
+    toolName === "MultiEdit" ||
+    toolName === "NotebookEdit" ||
+    toolName === "write_file"
+  ) {
+    return "change this file";
+  }
+  return `use ${toolName}`;
+}
+
+/** The permission ask (issue #28): the agent paused on something that needs
+ * a decision — the composer swaps to this panel until it is answered. */
+function PermissionAskPanel({
+  ask,
+  onAnswer,
+}: {
+  ask: PermissionAsk;
+  onAnswer: (allow: boolean, remember: "conversation" | "global" | null) => void;
+}) {
+  return (
+    <div className="min-w-0 flex-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium text-foreground">
+            The agent wants to {permissionVerb(ask.toolName)}:
+          </p>
+          <p className="mt-1 max-h-24 overflow-y-auto break-all font-mono text-[11px] text-foreground/90">
+            {ask.target}
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <Button
+          size="sm"
+          className="h-7 px-2.5 text-xs"
+          onClick={() => onAnswer(true, null)}
+        >
+          Allow
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2.5 text-xs"
+          title="Allowed for this conversation only — never shown in Settings"
+          onClick={() => onAnswer(true, "conversation")}
+        >
+          Allow for this conversation
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2.5 text-xs"
+          title="Allowed in every conversation — managed in Settings → Allowed"
+          onClick={() => onAnswer(true, "global")}
+        >
+          Allow permanently
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => onAnswer(false, null)}
+        >
+          Deny
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The in-flight stream: streaming text reveals word by word (issue #22)
+ * with a cursor on the newest piece; the goal progress lives ONLY in the
+ * pinned widget above the composer — TodoWrite pieces render nothing here. */
 function StreamingMessage({ stream }: { stream: StreamState }) {
+  const lastTextIndex = (() => {
+    for (let i = stream.segments.length - 1; i >= 0; i--) {
+      if (stream.segments[i].kind === "text") return i;
+    }
+    return -1;
+  })();
   return (
     <div className="flex w-full justify-start px-1">
-      <div className="w-full max-w-[85%] min-w-0 space-y-2">
+      <div className="w-full max-w-[85%] min-w-0 space-y-2 has-[[data-shaim-table]]:max-w-full">
         {stream.thinking.length > 0 && (
           <p className="animate-fade-in mb-1 whitespace-pre-wrap text-xs italic text-muted-foreground">
             {stream.thinking}
@@ -2352,9 +2713,11 @@ function StreamingMessage({ stream }: { stream: StreamState }) {
         )}
         {stream.segments.map((segment, index) =>
           segment.kind === "text" ? (
-            <p key={index} className="animate-fade-in whitespace-pre-wrap text-sm">
-              {segment.text}
-            </p>
+            <StreamingText
+              key={index}
+              text={segment.text}
+              instant={index !== lastTextIndex}
+            />
           ) : isReasoningTitle(segment.title) ? (
             <p
               key={index}
@@ -2363,15 +2726,27 @@ function StreamingMessage({ stream }: { stream: StreamState }) {
               {segment.detail}
             </p>
           ) : (
-            <ActivityBlock
-              key={`${index}-${segment.open}`}
-              title={segment.title}
-              detail={segment.detail}
-              defaultOpen={segment.open}
-            />
+            <StreamingActivity key={index} segment={segment} />
           ),
         )}
       </div>
     </div>
+  );
+}
+
+/** One live activity block. TodoWrite pieces feed the pinned goal-progress
+ * widget instead — rendering them here would stack one block per update. */
+function StreamingActivity({
+  segment,
+}: {
+  segment: Extract<StreamSegment, { kind: "activity" }>;
+}) {
+  if (parseTodoWrite(segment.detail)) return null;
+  return (
+    <ActivityBlock
+      title={segment.title}
+      detail={segment.detail}
+      defaultOpen={segment.open}
+    />
   );
 }

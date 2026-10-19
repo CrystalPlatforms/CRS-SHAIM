@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { isValidElement, useRef, useState } from "react";
 import { Check, ChevronRight, Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -6,6 +6,8 @@ import rehypeHighlight from "rehype-highlight";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { cn } from "@/lib/utils";
+import { parseShaimTable } from "@/lib/shaimBlocks";
+import { DataTable } from "@/components/DataTable";
 
 /**
  * Links never navigate the app's webview — they open in the system
@@ -44,12 +46,72 @@ export function MarkdownMessage({ content }: { content: string }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          pre: CodeBlock,
+          pre: ShaimDirectiveOrCode,
           a: ExternalLink,
         }}
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+/** Extracts the fenced-block language and its raw text from a `pre`'s
+ * children (highlighting wraps tokens in spans — walk past them). */
+function codeInfo(children: React.ReactNode): { language: string; body: string } {
+  let language = "";
+  let body = "";
+  const visit = (node: React.ReactNode) => {
+    if (typeof node === "string") {
+      body += node;
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (isValidElement(node)) {
+      const props = node.props as { className?: string; children?: React.ReactNode };
+      const match = /language-([\w-]+)/.exec(props.className ?? "");
+      if (match) language = match[1];
+      visit(props.children);
+    }
+  };
+  visit(children);
+  return { language, body: body.replace(/\n$/, "") };
+}
+
+/** The assistant's UI directives (issue #22): fenced blocks with the
+ * `shaim-*` info strings render as rich elements; everything else stays a
+ * regular code block. Malformed directive bodies degrade back to code. */
+function ShaimDirectiveOrCode({ children }: { children?: React.ReactNode }) {
+  const { language, body } = codeInfo(children);
+  switch (language) {
+    case "shaim-table": {
+      const table = parseShaimTable(body);
+      return table ? <DataTable header={table.header} rows={table.rows} /> : <CodeBlock>{children}</CodeBlock>;
+    }
+    case "shaim-todos":
+      // Goal progress lives ONLY in the pinned widget above the composer —
+      // blocks in the thread would stack one per update (issue #22
+      // feedback). The widget reads these blocks live from the stream.
+      return null;
+    case "shaim-ts":
+      return body.length > 0 ? <TimestampDivider label={body} /> : <CodeBlock>{children}</CodeBlock>;
+    default:
+      return <CodeBlock>{children}</CodeBlock>;
+  }
+}
+
+/** A timestamp divider the assistant placed with `shaim-ts`. */
+function TimestampDivider({ label }: { label: string }) {
+  return (
+    <div className="my-3 flex items-center gap-2" role="separator">
+      <div className="h-px flex-1 bg-border" />
+      <span className="text-[11px] font-medium text-muted-foreground">
+        {label}
+      </span>
+      <div className="h-px flex-1 bg-border" />
     </div>
   );
 }

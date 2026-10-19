@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Loader2, Pencil, PlugZap, Plus, RefreshCw, Trash2, TriangleAlert } from "lucide-react";
+import { FileText, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench } from "lucide-react";
 
-import type { AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
+import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
 import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -31,7 +30,7 @@ interface SettingsDialogProps {
   onServersChanged: () => void;
 }
 
-type Tab = "servers" | "skills" | "system" | "defaults" | "about";
+type Tab = "servers" | "skills" | "allowed" | "system" | "defaults" | "about";
 
 interface ServerStatus {
   state: "unknown" | "checking" | "online" | "offline";
@@ -46,9 +45,6 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>
-            Model servers and app-wide defaults.
-          </DialogDescription>
         </DialogHeader>
 
         <div className="flex gap-1 border-b border-border">
@@ -56,6 +52,7 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
             [
               ["servers", "Servers"],
               ["skills", "Skills"],
+              ["allowed", "Allowed"],
               ["system", "System prompt"],
               ["defaults", "Defaults"],
               ["about", "About"],
@@ -81,6 +78,8 @@ export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDial
           <ServersTab open={open} onServersChanged={onServersChanged} />
         ) : tab === "skills" ? (
           <SkillsTab open={open} />
+        ) : tab === "allowed" ? (
+          <AllowedTab open={open} />
         ) : tab === "system" ? (
           <SystemPromptTab open={open} />
         ) : tab === "defaults" ? (
@@ -253,13 +252,12 @@ function ServersTab({
       />
 
       <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Delete server?</DialogTitle>
-            <DialogDescription>
-              “{deleting?.name}” will be removed. Past conversations that used it stay open —
-              deleting a server never touches conversations.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
@@ -354,13 +352,10 @@ function ServerFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
-      <DialogContent>
+      <DialogContent aria-describedby={undefined}>
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>{server ? "Edit server" : "Add server"}</DialogTitle>
-            <DialogDescription>
-              Point Shaim at an Ollama instance or any OpenAI-compatible endpoint.
-            </DialogDescription>
           </DialogHeader>
 
           <div className="mt-3 space-y-3">
@@ -434,6 +429,121 @@ function ServerFormDialog({
 }
 
 // ---- Skills tab ------------------------------------------------------------
+
+// ---- Allowed tab (issue #28) ---------------------------------------------
+
+/** Icon + label for one allowed-rule kind. */
+const ALLOWED_KIND_META: Record<
+  AllowedRule["kind"],
+  { icon: typeof Terminal; label: string }
+> = {
+  command: { icon: Terminal, label: "Command" },
+  file: { icon: FileText, label: "File" },
+  tool: { icon: Wrench, label: "Tool" },
+};
+
+function AllowedTab({ open }: { open: boolean }) {
+  const [rules, setRules] = useState<AllowedRule[]>([]);
+  const [deleting, setDeleting] = useState<AllowedRule | null>(null);
+
+  const loadRules = useCallback(async () => {
+    try {
+      setRules(await invoke<AllowedRule[]>("list_allowed_commands"));
+    } catch (error) {
+      console.error("Failed to load allowed commands:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) void loadRules();
+  }, [open, loadRules]);
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    try {
+      await invoke("delete_allowed_command", { id: deleting.id });
+      setDeleting(null);
+      await loadRules();
+    } catch (error) {
+      console.error("Failed to delete allowed command:", error);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Commands, files and tools allowed permanently — the agent runs them
+        without asking, in every conversation. One-off and conversation-scoped
+        approvals never appear here.
+      </p>
+
+      {rules.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
+          <p>Nothing allowed permanently yet.</p>
+          <p className="mt-1">
+            Use “Allow permanently” on an agent's permission ask to pin one
+            here.
+          </p>
+        </div>
+      ) : (
+        <ul className="max-h-64 space-y-2 overflow-y-auto">
+          {rules.map((rule) => {
+            const meta = ALLOWED_KIND_META[rule.kind] ?? ALLOWED_KIND_META.tool;
+            const Icon = meta.icon;
+            return (
+              <li
+                key={rule.id}
+                className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2"
+              >
+                <span
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary"
+                  title={meta.label}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </span>
+                <div className="w-0 min-w-0 flex-1">
+                  <div className="truncate font-mono text-xs">{rule.pattern}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {meta.label}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => setDeleting(rule)}
+                  aria-label={`Remove ${rule.pattern}`}
+                  title="Remove"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>Remove allowed rule?</DialogTitle>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" autoFocus onClick={() => void confirmDelete()}>
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
 
 function SkillsTab({ open }: { open: boolean }) {
   const [skills, setSkills] = useState<StoredSkill[]>([]);
@@ -598,13 +708,12 @@ function SkillsTab({ open }: { open: boolean }) {
       />
 
       <Dialog open={deleting !== null} onOpenChange={(next) => (!next ? setDeleting(null) : undefined)}>
-        <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+        <DialogContent
+          aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Delete skill?</DialogTitle>
-            <DialogDescription>
-              “{deleting?.name}” and its files will be removed from the library. This
-              cannot be undone.
-            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>

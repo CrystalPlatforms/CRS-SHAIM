@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::AsyncBufReadExt;
@@ -47,6 +48,17 @@ pub enum AgentEvent {
     ActivityRetitle { title: String },
     /// The open activity block is complete.
     ActivityEnd,
+    /// Permission asks arrive as control requests (issue #28). `input_json`
+    /// is the compact tool-call input the decision travels back with.
+    PermissionRequest {
+        request_id: String,
+        tool_name: String,
+        input_json: String,
+    },
+    /// The agent finished its turn. In the interactive mode (streamed stdin)
+    /// the CLI would otherwise idle forever waiting for the next message —
+    /// the runner closes stdin here so the process exits cleanly.
+    TurnEnd,
     /// The agent reported its own failure (the stream still ends normally).
     Failed { message: String },
 }
@@ -116,6 +128,14 @@ pub trait AgentAdapter: Send {
         model: Option<&str>,
         images: &[PathBuf],
     ) -> Command;
+    /// `Some(intro)` spawns the CLI with a piped stdin and this first line —
+    /// the interactive-permission mode, where the prompt arrives as a
+    /// stream-json user message and later `control_response`s answer
+    /// permission asks. `None` keeps the prompt in argv with stdin closed.
+    fn initial_stdin(&self, access: AgentAccess, prompt: &str) -> Option<String> {
+        let _ = (access, prompt);
+        None
+    }
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent>;
 }
 
@@ -190,11 +210,112 @@ pub fn prompt_with_skills(prompt: &str, skills_block: &str) -> String {
     format!("{}\n\n---\n\n{prompt}", skills_block.trim_end())
 }
 
+/// The stdin line answering a `can_use_tool` control request. Allow passes
+/// the tool input back untouched; deny carries a human-readable message the
+/// agent sees as the refusal reason.
+pub fn control_response_line(request_id: &str, allow: bool, input_json: &str) -> String {
+    let decision = if allow {
+        let mut response = serde_json::json!({ "behavior": "allow" });
+        if let Ok(input) = serde_json::from_str::<serde_json::Value>(input_json) {
+            if input.is_object() {
+                response["updatedInput"] = input;
+            }
+        }
+        response
+    } else {
+        serde_json::json!({
+            "behavior": "deny",
+            "message": "The user denied this action in Shaim.",
+        })
+    };
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": decision,
+        },
+    })
+    .to_string()
+}
+
+/// The readable target of a permission ask: the command for shell tools, the
+/// path for file tools, the URL/query for web tools, the bare tool name
+/// otherwise. Shown in the ask and matched against standing rules.
+pub fn permission_target(tool_name: &str, input_json: &str) -> String {
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(input_json) else {
+        return tool_name.to_string();
+    };
+    for key in ["command", "file_path", "path", "notebook_path", "url", "query"] {
+        if let Some(value) = input.get(key).and_then(serde_json::Value::as_str) {
+            if !value.trim().is_empty() {
+                return value.trim().to_string();
+            }
+        }
+    }
+    tool_name.to_string()
+}
+
+/// Write end of an agent's stdin, shared with the permission responder
+/// (issue #28): while a run streams, `respond_permission` writes
+/// `control_response` lines here. Dropping the writer closes the pipe, which
+/// ends the CLI's turn — the runner does that when the run finishes. Writes
+/// are fire-and-forget tasks on the async runtime (both call sites — the
+/// event closure and the respond command — run inside it).
+#[derive(Clone, Default)]
+pub struct StdinHandle(Arc<std::sync::Mutex<Option<tokio::process::ChildStdin>>>);
+
+impl StdinHandle {
+    /// Writes one newline-terminated line. `false` when there is no runtime
+    /// or the run already ended (the writer is gone) — a late answer just
+    /// evaporates.
+    pub fn write_line(&self, line: &str) -> bool {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return false;
+        };
+        let stdin = self.0.clone();
+        let line = format!("{line}\n");
+        handle.spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let pipe = {
+                let mut guard =
+                    stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.take()
+            };
+            let Some(mut pipe) = pipe else {
+                return;
+            };
+            let _ = pipe.write_all(line.as_bytes()).await;
+            let _ = pipe.flush().await;
+            // The CLI may ask again — the write end stays put.
+            *stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pipe);
+        });
+        true
+    }
+
+    fn install(&self, stdin: tokio::process::ChildStdin) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stdin);
+    }
+
+    fn release(&self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
 impl AgentRunner {
     /// Spawns the adapter's CLI headless in `cwd`, forwards every parsed
     /// event through `on_event`, and folds the whole stream into segments.
     /// Stop (`abort`) kills the child process; the segments collected so far
-    /// come back with `aborted = true`.
+    /// come back with `aborted = true`. `stdin` receives the write end of
+    /// the child's stdin when the adapter runs in interactive-permission
+    /// mode (see [`AgentAdapter::initial_stdin`]) and is cleared when the
+    /// run ends.
     pub async fn run(
         adapter: &mut dyn AgentAdapter,
         cwd: &Path,
@@ -203,15 +324,27 @@ impl AgentRunner {
         model: Option<&str>,
         images: &[PathBuf],
         abort: &AbortFlag,
+        stdin: &StdinHandle,
         mut on_event: impl FnMut(AgentEvent),
     ) -> Result<AgentOutcome, AgentError> {
+        let intro = adapter.initial_stdin(access, prompt);
         let mut command = adapter.build_command(cwd, prompt, access, model, images);
         augment_path(&mut command);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        match &intro {
+            Some(_) => {
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+            }
+            None => {
+                command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+            }
+        };
+        command.kill_on_drop(true);
 
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -225,6 +358,16 @@ impl AgentRunner {
             }
         })?;
 
+        // The intro line (the prompt as a stream-json user message) goes out
+        // immediately; the write end stays reachable for permission answers.
+        if let Some(intro) = intro {
+            if let Some(mut pipe) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let _ = pipe.write_all(format!("{intro}\n").as_bytes()).await;
+                let _ = pipe.flush().await;
+                stdin.install(pipe);
+            }
+        }
         let mut stdout = tokio::io::BufReader::new(
             child
                 .stdout
@@ -271,6 +414,12 @@ impl AgentRunner {
             for event in adapter.parse_line(line.trim()) {
                 match event {
                     AgentEvent::Failed { message } => failed = Some(message),
+                    AgentEvent::TurnEnd => {
+                        // Turn is over — closing stdin ends the CLI's
+                        // session so the run actually finishes instead of
+                        // idling with a "still generating" stream.
+                        stdin.release();
+                    }
                     other => {
                         fold.apply(&other);
                         on_event(other);
@@ -278,6 +427,10 @@ impl AgentRunner {
                 }
             }
         }
+
+        // The run is over — closing stdin ends the CLI's turn cleanly and
+        // makes any late permission answer evaporate.
+        stdin.release();
 
         // Observe the child's exit — after a kill this is what proves the
         // process actually terminated.
@@ -385,6 +538,10 @@ impl SegmentFolder {
                 }
             }
             AgentEvent::ActivityEnd => {}
+            // Permissions ride through the caller's on_event, not the folds.
+            AgentEvent::PermissionRequest { .. } => {}
+            // Turn boundaries fold to nothing.
+            AgentEvent::TurnEnd => {}
             AgentEvent::Failed { message } => self.failed = Some(message.clone()),
         }
     }
@@ -491,24 +648,36 @@ impl AgentAdapter for ClaudeCodeAdapter {
         images: &[PathBuf],
     ) -> Command {
         let mut command = Command::new(resolve_binary(self.binary()));
-        command
-            .current_dir(cwd)
-            .args([
-                "-p",
-                prompt,
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--include-partial-messages",
-                // Headless runs cannot answer permission prompts. Agent mode
-                // accepts edits inside the folder; Natural mode stays in plan
-                // permissions — the model may look around but change nothing.
-                "--permission-mode",
-                match access {
-                    AgentAccess::Full => "acceptEdits",
-                    AgentAccess::ReadOnly => "plan",
-                },
-            ]);
+        command.current_dir(cwd);
+        match access {
+            AgentAccess::Full => {
+                // Interactive permissions (issue #28): the CLI asks through
+                // `can_use_tool` control requests and Shaim answers on
+                // stdin. `default` mode keeps every risky action (commands,
+                // edits, network) behind the ask; the prompt itself arrives
+                // as a stream-json user message (`initial_stdin`).
+                command.args([
+                    "-p",
+                    "--input-format",
+                    "stream-json",
+                    "--permission-mode",
+                    "default",
+                    "--permission-prompt-tool",
+                    "stdio",
+                ]);
+            }
+            AgentAccess::ReadOnly => {
+                // Headless read-only runs cannot answer permission prompts —
+                // plan permissions, the model may look but change nothing.
+                command.args(["-p", prompt, "--permission-mode", "plan"]);
+            }
+        }
+        command.args([
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+        ]);
         if let Some(model) = model.filter(|model| !model.is_empty() && *model != "default") {
             command.arg("--model").arg(model);
         }
@@ -527,6 +696,24 @@ impl AgentAdapter for ClaudeCodeAdapter {
         command
     }
 
+    /// Interactive-permission mode: the prompt travels as the first
+    /// stream-json user message so the CLI stays on stdin for the
+    /// `control_response`s that answer permission asks.
+    fn initial_stdin(&self, access: AgentAccess, prompt: &str) -> Option<String> {
+        if access != AgentAccess::Full {
+            return None;
+        }
+        let message = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": prompt }],
+            },
+            "parent_tool_use_id": null,
+        });
+        Some(message.to_string())
+    }
+
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             return Vec::new();
@@ -541,12 +728,45 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 self.parse_complete_blocks(&value["message"])
             }
             Some("result") => self.parse_result(&value),
+            Some("control_request") => Self::parse_control_request(&value),
             _ => Vec::new(),
         }
     }
 }
 
 impl ClaudeCodeAdapter {
+    /// Permission asks arrive as control requests (issue #28):
+    /// `{"type":"control_request","request_id":…,"request":{"subtype":
+    /// "can_use_tool","tool_name":…,"input":{…}}}`. Only `can_use_tool` is
+    /// answered today; other control subtypes are ignored.
+    fn parse_control_request(value: &serde_json::Value) -> Vec<AgentEvent> {
+        let request = &value["request"];
+        if request.get("subtype").and_then(serde_json::Value::as_str) != Some("can_use_tool") {
+            return Vec::new();
+        }
+        let request_id = value
+            .get("request_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if request_id.is_empty() {
+            return Vec::new();
+        }
+        let tool_name = request
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Tool")
+            .to_string();
+        let input_json = request
+            .get("input")
+            .map(|input| input.to_string())
+            .unwrap_or_default();
+        vec![AgentEvent::PermissionRequest {
+            request_id: request_id.to_string(),
+            tool_name,
+            input_json,
+        }]
+    }
+
     fn parse_stream_event(&mut self, event: &serde_json::Value) -> Vec<AgentEvent> {
         let mut events = Vec::new();
         match event.get("type").and_then(serde_json::Value::as_str) {
@@ -748,11 +968,16 @@ impl ClaudeCodeAdapter {
                 .get("result")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(subtype);
-            return vec![AgentEvent::Failed {
-                message: format!("Claude Code finished with an error: {detail}"),
-            }];
+            return vec![
+                AgentEvent::Failed {
+                    message: format!("Claude Code finished with an error: {detail}"),
+                },
+                // An errored turn is still a finished turn — stdin must
+                // close either way or the interactive CLI idles forever.
+                AgentEvent::TurnEnd,
+            ];
         }
-        Vec::new()
+        vec![AgentEvent::TurnEnd]
     }
 }
 

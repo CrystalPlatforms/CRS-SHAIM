@@ -7,16 +7,23 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::State;
+use tokio::sync::oneshot;
 
-use crate::agent::{adapter_for, home_dir, AgentEvent, AgentRunner, Segment};
+use crate::agent::{
+    adapter_for, control_response_line, home_dir, permission_target, AgentEvent, AgentRunner,
+    Segment, StdinHandle,
+};
 use crate::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, ModelInfo};
 use crate::skills::{self, SkillStore};
-use crate::store::{AgentKind, Conversation, Message, Server, Settings, Skill, Store};
+use crate::store::{
+    AgentKind, AllowedKind, AllowedRule, Conversation, Message, Server, Settings, Skill, Store,
+};
 use crate::AppState;
 
 type CmdResult<T> = Result<T, String>;
@@ -27,6 +34,182 @@ fn with_store<T>(
 ) -> CmdResult<T> {
     let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
     f(&guard).map_err(|e| e.to_string())
+}
+
+// ---- Permissions (issue #28) ------------------------------------------------
+
+/// Teaches the assistant Shaim's UI directives (issue #22): fenced blocks
+/// with these info strings render as rich elements instead of code. Rides on
+/// every request — natural chat, agent CLI prompts and the tool loop.
+pub const UI_DIRECTIVES_HINT: &str = "Shaim renders these fenced blocks as rich UI elements when you emit them in a reply:\n\
+- ```shaim-table with CSV (a header row, then data rows) — rendered as an interactive data table.\n\
+- ```shaim-todos with JSON {\"items\":[{\"label\":\"…\",\"status\":\"pending|active|done\"}]} — rendered as a live goal-progress panel while you work; re-emit it as your plan or progress changes.\n\
+- ```shaim-ts with a short label — rendered as a timestamp divider between sections.\n\
+Use them sparingly, only when they genuinely help. Long multi-step tasks benefit most from shaim-todos: keep it current so the user can follow what you are doing right now.";
+
+/// Appends the UI-directives hint to an assembled prompt.
+fn with_ui_hint(mut prompt: String) -> String {
+    if !prompt.is_empty() {
+        prompt.push_str("\n\n---\n\n");
+    }
+    prompt.push_str(UI_DIRECTIVES_HINT);
+    prompt
+}
+
+/// What the permission gate is willing to approve without asking. `Command`
+/// names shell commands, `File` project paths, `Tool` whole tools; every
+/// match is exact by design ("Allow permanently" stores exactly what was
+/// shown in the ask). Public so the integration tests drive the same
+/// mapping the gate uses.
+pub fn rule_matches(rule: &AllowedRule, tool_name: &str, target: &str) -> bool {
+    match AllowedKind::parse(&rule.kind) {
+        Ok(AllowedKind::Command) => {
+            (tool_name == "Bash" || tool_name == "run_command") && target == rule.pattern
+        }
+        Ok(AllowedKind::File) => {
+            matches!(
+                tool_name,
+                "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "write_file"
+            ) && same_path(target, &rule.pattern)
+        }
+        Ok(AllowedKind::Tool) => tool_name == rule.pattern,
+        Err(_) => false,
+    }
+}
+
+/// Exact path comparison tolerant to the `./` prefix and to one side being
+/// absolute while the other is relative (both spellings of the same project
+/// file are the same permission).
+pub fn same_path(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    fn normalize(raw: &str) -> Vec<std::path::Component<'_>> {
+        // `components()` keeps a leading `.` — drop it, both spellings of
+        // one project-relative path are the same permission.
+        Path::new(raw.trim())
+            .components()
+            .filter(|part| !matches!(part, std::path::Component::CurDir))
+            .collect()
+    }
+    normalize(a) == normalize(b)
+}
+
+/// True when one of `rules` already covers this ask — the gate answers
+/// without surfacing anything to the user.
+pub fn auto_allowed(rules: &[AllowedRule], tool_name: &str, target: &str) -> bool {
+    rules
+        .iter()
+        .any(|rule| rule_matches(rule, tool_name, target))
+}
+
+/// Which `AllowedKind` a permission ask collapses into when remembered.
+fn rule_kind_for(tool_name: &str) -> AllowedKind {
+    match tool_name {
+        "Bash" | "run_command" => AllowedKind::Command,
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "write_file" => AllowedKind::File,
+        _ => AllowedKind::Tool,
+    }
+}
+
+/// The pattern a remembered rule stores: the command string, the file path,
+/// or the tool name itself.
+fn rule_pattern_for(tool_name: &str, target: &str) -> String {
+    match rule_kind_for(tool_name) {
+        AllowedKind::File => target.to_string(),
+        AllowedKind::Command => target.to_string(),
+        AllowedKind::Tool => tool_name.to_string(),
+    }
+}
+
+/// One ask waiting for the user's decision, keyed by request id in
+/// `AppState.permissions`.
+pub enum PendingPermission {
+    /// A CLI agent awaits a `control_response` on its stdin.
+    Cli {
+        stdin: StdinHandle,
+        input_json: String,
+        tool_name: String,
+        conversation_id: i64,
+    },
+    /// The server-brain tool loop awaits the decision through this channel.
+    Loop {
+        responder: oneshot::Sender<bool>,
+        tool_name: String,
+        target: String,
+        conversation_id: i64,
+    },
+}
+
+/// Settings → Allowed: the global ("permanently") rules only.
+#[tauri::command]
+pub fn list_allowed_commands(state: State<'_, AppState>) -> CmdResult<Vec<AllowedRule>> {
+    with_store(&state, |store| store.list_global_allowed_rules())
+}
+
+/// Removes one global rule from Settings → Allowed.
+#[tauri::command]
+pub fn delete_allowed_command(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    with_store(&state, |store| store.delete_allowed_rule(id))
+}
+
+/// The user's answer to a permission ask (issue #28): allow or deny, plus
+/// whether to remember it — `None` just this once, `"conversation"` for this
+/// conversation forever, `"global"` for every conversation (the Settings →
+/// Allowed list).
+#[tauri::command]
+pub async fn respond_permission(
+    state: State<'_, AppState>,
+    request_id: String,
+    allow: bool,
+    remember: Option<String>,
+    conversation_id: Option<i64>,
+) -> CmdResult<()> {
+    let pending = state
+        .permissions
+        .lock()
+        .map_err(|_| "permission lock poisoned")?
+        .remove(&request_id);
+    let Some(pending) = pending else {
+        return Err("no such permission request (already answered?)".into());
+    };
+
+    let (tool_name, target, rule_conversation_id) = match pending {
+        PendingPermission::Cli {
+            stdin,
+            input_json,
+            tool_name,
+            conversation_id,
+        } => {
+            stdin.write_line(&control_response_line(&request_id, allow, &input_json));
+            let target = permission_target(&tool_name, &input_json);
+            (tool_name, target, conversation_id)
+        }
+        PendingPermission::Loop {
+            responder,
+            tool_name,
+            target,
+            conversation_id,
+        } => {
+            let _ = responder.send(allow);
+            (tool_name, target, conversation_id)
+        }
+    };
+
+    let remember = remember.as_deref();
+    if matches!(remember, Some("conversation") | Some("global")) && allow {
+        let scope: Option<i64> = if remember == Some("global") {
+            None
+        } else {
+            Some(rule_conversation_id).or(conversation_id)
+        };
+        let kind = rule_kind_for(&tool_name);
+        let pattern = rule_pattern_for(&tool_name, &target);
+        with_store(&state, |store| {
+            store.add_allowed_rule(scope, kind, &pattern)
+        })?;
+    }
+    Ok(())
 }
 
 // ---- Servers ---------------------------------------------------------------
@@ -724,6 +907,15 @@ pub enum ChatStreamEvent {
     ActivityRetitle { title: String },
     /// Agent streams: the open activity block is complete.
     ActivityEnd,
+    /// The agent asked to run something that needs the user's decision
+    /// (issue #28). No matching standing rule — the UI shows the three
+    /// allow buttons; the answer travels back through `respond_permission`.
+    PermissionRequest {
+        request_id: String,
+        tool_name: String,
+        target: String,
+        input_json: String,
+    },
     TitleChanged { title: String },
     Done { message_id: i64, content: String, thinking: String, aborted: bool },
     /// Agent runs end with a full `History` push plus this marker — a chat
@@ -812,6 +1004,8 @@ pub fn apply_skill_injection(
     }
     let block = skills::prompt_block(&prompts);
     options.system_prompt = skills::with_skill_block(options.system_prompt.take(), &block);
+    // The UI-directives hint rides on every server-model request too (issue #22).
+    options.system_prompt = Some(with_ui_hint(options.system_prompt.take().unwrap_or_default()));
     Ok(())
 }
 
@@ -1139,6 +1333,9 @@ pub async fn send_agent_message(
                 if !skills_block.is_empty() {
                     prompt = crate::agent::prompt_with_skills(&prompt, &skills_block);
                 }
+                // The UI-directives hint teaches the CLI brain Shaim's
+                // renderable blocks (issue #22).
+                prompt = with_ui_hint(prompt);
                 // Two attachment channels: data URLs land in temp files, and
                 // paths pasted into the message text are picked up as-is.
                 let data_url_files = write_image_tempfiles(&images);
@@ -1155,6 +1352,8 @@ pub async fn send_agent_message(
                     }
                 }
                 let mut adapter = adapter_for(kind);
+                let stdin = StdinHandle::default();
+                let permission_stdin = stdin.clone();
                 AgentRunner::run(
                     adapter.as_mut(),
                     &cwd,
@@ -1163,22 +1362,78 @@ pub async fn send_agent_message(
                     model.as_deref(),
                     &image_files,
                     &abort,
+                    &stdin,
                     |event| {
-                        let _ = channel.send(match event {
-                            AgentEvent::TextDelta { text } => ChatStreamEvent::Content { text },
+                        let mapped: Option<ChatStreamEvent> = match event {
+                            AgentEvent::TextDelta { text } => {
+                                Some(ChatStreamEvent::Content { text })
+                            }
                             AgentEvent::ActivityStart { title } => {
-                                ChatStreamEvent::ActivityStart { title }
+                                Some(ChatStreamEvent::ActivityStart { title })
                             }
                             AgentEvent::ActivityAppend { detail } => {
-                                ChatStreamEvent::ActivityAppend { detail }
+                                Some(ChatStreamEvent::ActivityAppend { detail })
                             }
                             AgentEvent::ActivityRetitle { title } => {
-                                ChatStreamEvent::ActivityRetitle { title }
+                                Some(ChatStreamEvent::ActivityRetitle { title })
                             }
-                            AgentEvent::ActivityEnd => ChatStreamEvent::ActivityEnd,
+                            AgentEvent::ActivityEnd => Some(ChatStreamEvent::ActivityEnd),
+                            AgentEvent::PermissionRequest {
+                                request_id,
+                                tool_name,
+                                input_json,
+                            } => {
+                                // A standing rule answers without the ask
+                                // ever reaching the user; otherwise the UI
+                                // shows the allow buttons and the decision
+                                // comes back through `respond_permission`.
+                                let target = permission_target(&tool_name, &input_json);
+                                let rules = {
+                                    let guard =
+                                        state.store.lock().expect("store lock");
+                                    guard.rules_for_conversation(conversation_id)
+                                };
+                                match rules {
+                                    Ok(ref rules)
+                                        if auto_allowed(rules, &tool_name, &target) =>
+                                    {
+                                        permission_stdin.write_line(&control_response_line(
+                                            &request_id, true, &input_json,
+                                        ));
+                                        None
+                                    }
+                                    _ => {
+                                        state
+                                            .permissions
+                                            .lock()
+                                            .expect("permission lock")
+                                            .insert(
+                                                request_id.clone(),
+                                                PendingPermission::Cli {
+                                                    stdin: permission_stdin.clone(),
+                                                    input_json,
+                                                    tool_name: tool_name.clone(),
+                                                    conversation_id,
+                                                },
+                                            );
+                                        Some(ChatStreamEvent::PermissionRequest {
+                                            request_id,
+                                            tool_name,
+                                            target,
+                                            input_json: String::new(),
+                                        })
+                                    }
+                                }
+                            }
                             // The runner folds Failed events into the outcome.
-                            AgentEvent::Failed { .. } => ChatStreamEvent::ActivityEnd,
-                        });
+                            AgentEvent::Failed { .. } => Some(ChatStreamEvent::ActivityEnd),
+                            // Turn boundary — the runner closed stdin, the
+                            // UI learns nothing new.
+                            AgentEvent::TurnEnd => None,
+                        };
+                        if let Some(event) = mapped {
+                            let _ = channel.send(event);
+                        }
                     },
                 )
                 .await
@@ -1412,7 +1667,32 @@ async fn run_tool_loop(
             }
             let (running, done, head) = tool_block_titles(&call);
             let _ = channel.send(ChatStreamEvent::ActivityStart { title: running });
-            let result = crate::tools::execute(cwd, &call).await;
+            // Permission gate (issue #28): commands and file writes ask the
+            // user first unless a standing rule already covers them.
+            let arguments_json =
+                serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into());
+            let target = permission_target(&call.name, &arguments_json);
+            let allowed = {
+                let rules = {
+                    let guard = state.store.lock().map_err(|_| "store lock poisoned")?;
+                    guard
+                        .rules_for_conversation(conversation_id)
+                        .map_err(|e| e.to_string())?
+                };
+                if auto_allowed(&rules, &call.name, &target) {
+                    true
+                } else {
+                    ask_permission(state, channel, conversation_id, &call.name, &target, abort)
+                        .await
+                }
+            };
+            let result = if allowed {
+                crate::tools::execute(cwd, &call).await
+            } else {
+                format!(
+                    "error: the user denied running `{target}` — do not retry it without asking."
+                )
+            };
             let detail = format!("{head}\n\n→ {}", crate::tools::cap_for_detail(&result));
             let _ = channel.send(ChatStreamEvent::ActivityAppend { detail: detail.clone() });
             let _ = channel.send(ChatStreamEvent::ActivityRetitle { title: done.clone() });
@@ -1431,6 +1711,68 @@ async fn run_tool_loop(
         }
     }
     Ok(segments)
+}
+
+/// Surfaces one permission ask to the UI and waits for the decision
+/// (server-brain tool loop path, issue #28). Stop ends the wait as a denial;
+/// the pending entry is always cleaned up.
+async fn ask_permission(
+    state: &State<'_, AppState>,
+    channel: &Channel<ChatStreamEvent>,
+    conversation_id: i64,
+    tool_name: &str,
+    target: &str,
+    abort: &AbortFlag,
+) -> bool {
+    let request_id = format!(
+        "loop-{}",
+        state.next_generation.fetch_add(1, Ordering::SeqCst)
+    );
+    let (responder, mut receiver) = oneshot::channel();
+    state
+        .permissions
+        .lock()
+        .expect("permission lock")
+        .insert(
+            request_id.clone(),
+            PendingPermission::Loop {
+                responder,
+                tool_name: tool_name.to_string(),
+                target: target.to_string(),
+                conversation_id,
+            },
+        );
+    let _ = channel.send(ChatStreamEvent::PermissionRequest {
+        request_id: request_id.clone(),
+        tool_name: tool_name.to_string(),
+        target: target.to_string(),
+        input_json: String::new(),
+    });
+
+    let mut allowed = false;
+    loop {
+        if abort.is_aborted() {
+            break;
+        }
+        match receiver.try_recv() {
+            Ok(answer) => {
+                allowed = answer;
+                break;
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(oneshot::error::TryRecvError::Closed) => break,
+        }
+    }
+    // `respond_permission` removed the entry on an answer; an aborted or
+    // abandoned ask leaves it behind — drop it either way.
+    state
+        .permissions
+        .lock()
+        .expect("permission lock")
+        .remove(&request_id);
+    allowed
 }
 
 /// Emits a reasoning/activity block the same way the CLI path does.

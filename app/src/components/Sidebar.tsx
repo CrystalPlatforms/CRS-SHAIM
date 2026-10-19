@@ -16,7 +16,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -208,7 +207,7 @@ export function Sidebar({
                     type="button"
                     onClick={() => onSelect(conversation.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-all duration-150 hover:translate-x-0.5",
+                      "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
                       conversation.id === selectedId
                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
@@ -269,13 +268,10 @@ export function Sidebar({
             if (!open) setRenaming(null);
           }}
         >
-          <DialogContent>
+          <DialogContent aria-describedby={undefined}>
             <form onSubmit={submitRename}>
               <DialogHeader>
                 <DialogTitle>Rename conversation</DialogTitle>
-                <DialogDescription>
-                  Give this conversation a name you will recognize.
-                </DialogDescription>
               </DialogHeader>
               <Input
                 autoFocus
@@ -303,13 +299,12 @@ export function Sidebar({
             if (!open) setDeleting(null);
           }}
         >
-          <DialogContent onOpenAutoFocus={(event) => event.preventDefault()}>
+          <DialogContent
+            aria-describedby={undefined}
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
             <DialogHeader>
               <DialogTitle>Delete conversation?</DialogTitle>
-              <DialogDescription>
-                “{deleting?.title}” and all of its messages will be permanently
-                removed. This cannot be undone.
-              </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button variant="ghost" onClick={() => setDeleting(null)}>

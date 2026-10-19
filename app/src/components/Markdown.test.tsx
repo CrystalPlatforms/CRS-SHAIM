@@ -188,3 +188,56 @@ describe("MessageView", () => {
     expect(screen.getByText("# not a heading, just text")).toBeInTheDocument();
   });
 });
+
+describe("assistant UI directives (issue #22)", () => {
+  it("renders a shaim-table directive as an interactive data table", () => {
+    render(
+      <MarkdownMessage
+        content={"Here:\n\n```shaim-table\nname,score\nAda,99\nBo,70\n```"}
+      />,
+    );
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sort by score" })).toBeInTheDocument();
+    expect(screen.getByText("Ada")).toBeInTheDocument();
+  });
+
+  it("renders a shaim-todos directive as nothing in the thread — the pinned widget shows it live", () => {
+    const { container } = render(
+      <MarkdownMessage
+        content={
+          '```shaim-todos\n{"items":[{"label":"Plan","status":"done"},{"label":"Build","status":"active"}]}\n```'
+        }
+      />,
+    );
+    expect(screen.queryByText("Goal progress")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy code" })).not.toBeInTheDocument();
+    const body = container.querySelector(".markdown-body");
+    expect(body).not.toBeNull();
+    expect(body?.children.length ?? 1).toBe(0);
+  });
+
+  it("renders a shaim-ts directive as a timestamp divider", () => {
+    render(<MarkdownMessage content={"```shaim-ts\nToday\n```"} />);
+    expect(screen.getByText("Today")).toBeInTheDocument();
+  });
+
+  it("renders an unknown shaim-* block (queue was retired) as plain code", () => {
+    render(
+      <MarkdownMessage
+        content={"```shaim-queue\nRun the tests now\n```"}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+    expect(screen.queryByText("Goal progress")).not.toBeInTheDocument();
+  });
+
+  it("degrades a malformed table directive back to a plain code block", () => {
+    render(
+      <MarkdownMessage
+        content={"```shaim-table\njust some words\n```"}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+});
