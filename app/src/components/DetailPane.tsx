@@ -179,6 +179,15 @@ export function DetailPane({
     void loadServers();
   }, [loadServers, open]);
 
+  // Settings → Servers may add/edit/delete while Details stays open — the
+  // window event keeps the Server dropdown current without a reopen.
+  useEffect(() => {
+    const onServersChanged = () => void loadServers();
+    window.addEventListener("shaim:servers-changed", onServersChanged);
+    return () =>
+      window.removeEventListener("shaim:servers-changed", onServersChanged);
+  }, [loadServers]);
+
   // Fetch the model list for whichever server is in play. Re-runs when the
   // server row changes, so an edited/fixed server refreshes without a restart.
   useEffect(() => {

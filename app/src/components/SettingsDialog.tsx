@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileText, Info, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ModePill } from "@/components/ChatPane";
 
 import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
 import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
@@ -121,6 +122,13 @@ function ServersTab({
   const [editing, setEditing] = useState<Server | "new" | null>(null);
   const [deleting, setDeleting] = useState<Server | null>(null);
 
+  // App.refresh() only reloads conversations — open panes that keep their
+  // own server list (DetailPane) learn about changes through this event.
+  const notifyServersChanged = useCallback(() => {
+    onServersChanged();
+    window.dispatchEvent(new Event("shaim:servers-changed"));
+  }, [onServersChanged]);
+
   const loadServers = useCallback(async () => {
     try {
       setServers(await invoke<Server[]>("list_servers"));
@@ -161,7 +169,7 @@ function ServersTab({
       await invoke("delete_server", { id: deleting.id });
       setDeleting(null);
       await loadServers();
-      onServersChanged();
+      notifyServersChanged();
     } catch (error) {
       console.error("Failed to delete server:", error);
     }
@@ -262,7 +270,7 @@ function ServersTab({
         onSaved={async () => {
           setEditing(null);
           await loadServers();
-          onServersChanged();
+          notifyServersChanged();
         }}
       />
 
@@ -368,6 +376,14 @@ function ServerFormDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
       <DialogContent aria-describedby={undefined}>
+        {/* Corner ⓘ — the fixed dialog anchors it; hover reveals the URL
+            examples (no dead zone, copyable text). */}
+        <div className="absolute right-3 top-3">
+          <TabInfoHint
+            label="About server URLs"
+            text="Ollama: http://host:11434 · Open WebUI: http://host:8080/api"
+          />
+        </div>
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>{server ? "Edit server" : "Add server"}</DialogTitle>
@@ -380,23 +396,29 @@ function ServerFormDialog({
                 autoFocus
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Linux box"
+                placeholder="…"
               />
             </label>
 
             <div className="block space-y-1">
               <span className="text-xs text-muted-foreground">Kind</span>
-              <Select value={kind} onValueChange={(next) => setKind(next as ServerKind)}>
-                <SelectTrigger aria-label="Server kind" className="py-2 text-sm">
-                  <SelectValue>
-                    {kind === "ollama" ? "Ollama" : "OpenAI-compatible"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="text-sm">
-                  <SelectItem value="ollama">Ollama</SelectItem>
-                  <SelectItem value="openai_compatible">OpenAI-compatible</SelectItem>
-                </SelectContent>
-              </Select>
+              {/* Two pills instead of a Radix select — the dropdown's value
+                  node kept misbehaving in WKWebView (empty label, then a
+                  dead trigger after the first pick); these always work. */}
+              <div className="flex items-center gap-1.5 pt-0.5" role="radiogroup" aria-label="Server kind">
+                <ModePill
+                  label="Ollama"
+                  active={kind === "ollama"}
+                  disabled={false}
+                  onClick={() => setKind("ollama")}
+                />
+                <ModePill
+                  label="OpenAI-compatible"
+                  active={kind === "openai_compatible"}
+                  disabled={false}
+                  onClick={() => setKind("openai_compatible")}
+                />
+              </div>
             </div>
 
             <label className="block space-y-1">
@@ -404,11 +426,8 @@ function ServerFormDialog({
               <Input
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
-                placeholder="http://192.168.1.10:11434"
+                placeholder="…"
               />
-              <span className="block text-[11px] text-muted-foreground">
-                Ollama: http://host:11434 · Open WebUI: http://host:8080/api
-              </span>
             </label>
 
             <label className="block space-y-1">
