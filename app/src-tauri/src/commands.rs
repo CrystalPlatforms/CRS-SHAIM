@@ -56,43 +56,60 @@ fn with_ui_hint(mut prompt: String) -> String {
     prompt
 }
 
-/// What the permission gate is willing to approve without asking. `Command`
-/// names shell commands, `File` project paths, `Tool` whole tools; every
-/// match is exact by design ("Allow permanently" stores exactly what was
-/// shown in the ask). Public so the integration tests drive the same
-/// mapping the gate uses.
+/// Teaches the Claude Code brain to trust its core tools (issue #32 HITL):
+/// since CLI 2.1.306 defers most tools behind ToolSearch when many MCP
+/// servers are configured, weaker models read the preamble, find no
+/// Write/Bash in the index and conclude the tools are missing — the ask
+/// never even reaches Shaim's permission gate. Only Claude Code has
+/// ToolSearch, so the hint rides on its prompts alone.
+pub const TOOLS_HINT: &str = "Your standard tools (Read, Write, Edit, Bash, Glob, Grep and the rest) are available right now — call them directly for file and shell work. ToolSearch only loads optional deferred extensions (MCP tools and similar); core tools are never in its index, so do not search for them there and never conclude a core tool is missing without trying it once.";
+
+/// Appends the tools hint to a Claude Code prompt; other brains untouched.
+pub fn with_tools_hint(kind: crate::store::AgentKind, mut prompt: String) -> String {
+    if kind != crate::store::AgentKind::ClaudeCode {
+        return prompt;
+    }
+    if !prompt.is_empty() {
+        prompt.push_str("\n\n---\n\n");
+    }
+    prompt.push_str(TOOLS_HINT);
+    prompt
+}
+
+/// What the permission gate is willing to approve without asking (issue
+/// #32). `Command` matches a command family — the program sequence, so `npm`
+/// covers `npm install` but not `git status`; `File` matches a file action —
+/// `create` or `edit`, every path; `Tool` a whole tool by name. Public so the
+/// integration tests drive the same mapping the gate uses.
 pub fn rule_matches(rule: &AllowedRule, tool_name: &str, target: &str) -> bool {
     match AllowedKind::parse(&rule.kind) {
         Ok(AllowedKind::Command) => {
-            (tool_name == "Bash" || tool_name == "run_command") && target == rule.pattern
+            (tool_name == "Bash" || tool_name == "run_command")
+                && command_pattern(target) == command_pattern(&rule.pattern)
         }
         Ok(AllowedKind::File) => {
             matches!(
                 tool_name,
                 "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "write_file"
-            ) && same_path(target, &rule.pattern)
+            ) && file_action(tool_name) == rule.pattern
         }
         Ok(AllowedKind::Tool) => tool_name == rule.pattern,
         Err(_) => false,
     }
 }
 
-/// Exact path comparison tolerant to the `./` prefix and to one side being
-/// absolute while the other is relative (both spellings of the same project
-/// file are the same permission).
-pub fn same_path(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    fn normalize(raw: &str) -> Vec<std::path::Component<'_>> {
-        // `components()` keeps a leading `.` — drop it, both spellings of
-        // one project-relative path are the same permission.
-        Path::new(raw.trim())
-            .components()
-            .filter(|part| !matches!(part, std::path::Component::CurDir))
-            .collect()
-    }
-    normalize(a) == normalize(b)
+/// The command family a shell ask belongs to (issue #32): the program of
+/// every operator-separated segment (`&`, `;`, `|`), joined with `&&`.
+/// `cd frontend && npm run build` is the family `cd && npm`; quotes are not
+/// parsed — an operator inside a quoted string splits anyway, which at worst
+/// asks again. Old full-command patterns derive their own family, so the
+/// pre-#32 exact rule `npm test` reads as `npm` — the widening #32 asks for.
+pub fn command_pattern(command: &str) -> String {
+    command
+        .split(['&', ';', '|'])
+        .filter_map(|segment| segment.split_whitespace().next())
+        .collect::<Vec<_>>()
+        .join(" && ")
 }
 
 /// True when one of `rules` already covers this ask — the gate answers
@@ -112,12 +129,23 @@ fn rule_kind_for(tool_name: &str) -> AllowedKind {
     }
 }
 
-/// The pattern a remembered rule stores: the command string, the file path,
-/// or the tool name itself.
-fn rule_pattern_for(tool_name: &str, target: &str) -> String {
+/// The file action an ask performs (issue #32): the write tools create, the
+/// edit tools edit. There is no delete tool — deletion rides Bash, so it is
+/// covered by command families (`rm …` → the `rm` family).
+fn file_action(tool_name: &str) -> &'static str {
+    match tool_name {
+        "Edit" | "MultiEdit" | "NotebookEdit" => "edit",
+        _ => "create",
+    }
+}
+
+/// The general pattern a remembered rule stores (issue #32): the command's
+/// program sequence, the file action, or the tool name itself. Public so the
+/// integration tests drive the same mapping `respond_permission` saves with.
+pub fn rule_pattern_for(tool_name: &str, target: &str) -> String {
     match rule_kind_for(tool_name) {
-        AllowedKind::File => target.to_string(),
-        AllowedKind::Command => target.to_string(),
+        AllowedKind::File => file_action(tool_name).to_string(),
+        AllowedKind::Command => command_pattern(target),
         AllowedKind::Tool => tool_name.to_string(),
     }
 }
@@ -1336,6 +1364,9 @@ pub async fn send_agent_message(
                 // The UI-directives hint teaches the CLI brain Shaim's
                 // renderable blocks (issue #22).
                 prompt = with_ui_hint(prompt);
+                // The tools hint keeps the Claude Code brain from talking
+                // itself out of its core tools (CLI 2.1.306 regression).
+                prompt = with_tools_hint(kind, prompt);
                 // Two attachment channels: data URLs land in temp files, and
                 // paths pasted into the message text are picked up as-is.
                 let data_url_files = write_image_tempfiles(&images);

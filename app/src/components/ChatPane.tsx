@@ -2669,7 +2669,7 @@ function PermissionAskPanel({
           size="sm"
           variant="outline"
           className="h-7 px-2.5 text-xs"
-          title="Allowed for this conversation only — never shown in Settings"
+          title="Remembers a general grant for this conversation — any command with the same programs, any file creation or edit, or the whole tool. Never shown in Settings"
           onClick={() => onAnswer(true, "conversation")}
         >
           Allow for this conversation
@@ -2678,7 +2678,7 @@ function PermissionAskPanel({
           size="sm"
           variant="outline"
           className="h-7 px-2.5 text-xs"
-          title="Allowed in every conversation — managed in Settings → Allowed"
+          title="Remembers a general grant in every conversation — managed in Settings → Allowed"
           onClick={() => onAnswer(true, "global")}
         >
           Allow permanently

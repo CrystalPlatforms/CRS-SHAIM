@@ -543,3 +543,36 @@ fn control_requests_parse_into_permission_events() {
     // Garbage never panics.
     assert!(adapter.parse_line("not json").is_empty());
 }
+
+#[test]
+fn tools_hint_rides_only_on_claude_code_prompts() {
+    // The 2.1.306 deferred-tools harness makes weaker models conclude the
+    // core tools are missing (they are never in ToolSearch's index), so the
+    // hint rides on every Claude Code prompt (issue #32 HITL regression).
+    use shaim_lib::commands::with_tools_hint;
+    let base = String::from("create a.txt with hello");
+    let claude = with_tools_hint(AgentKind::ClaudeCode, base.clone());
+    assert!(claude.contains(&base), "prompt content survives");
+    assert!(claude.contains("ToolSearch"), "the hint names the trap");
+    assert_eq!(
+        with_tools_hint(AgentKind::Codex, base),
+        "create a.txt with hello",
+        "codex has no ToolSearch — its prompts are untouched"
+    );
+}
+
+#[test]
+fn bash_ask_settings_force_every_command_through_the_ask() {
+    // The CLI's built-in safe-list runs read-only commands (`git status`,
+    // `ls`, …) without asking, silently bypassing Shaim's gate. The spawn
+    // carries an `ask` rule so every Bash reaches the can_use_tool ask,
+    // where Shaim's own rules decide (issue #32 HITL regression).
+    use shaim_lib::agent::BASH_ASK_SETTINGS;
+    let settings: serde_json::Value =
+        serde_json::from_str(BASH_ASK_SETTINGS).expect("valid settings JSON");
+    assert_eq!(
+        settings["permissions"]["ask"],
+        serde_json::json!(["Bash"]),
+        "every Bash command asks, Shaim's rules then auto-answer"
+    );
+}

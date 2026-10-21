@@ -1,10 +1,21 @@
-//! Permission rules and the Claude control protocol (issue #28).
+//! Permission rules and the Claude control protocol (issues #28, #32).
 //!
 //! Assumptions these tests encode:
-//! - A standing rule matches EXACTLY: the stored pattern is what the ask
-//!   showed, so only the identical command / path / tool name passes.
-//! - File rules tolerate the two spellings of one path (`./x` vs `x`,
-//!   relative vs absolute-for-the-same-cwd) but nothing fuzzier.
+//! - A remembered rule is GENERAL (issue #32), not exact: "allow permanently"
+//!   / "allow for this conversation" stores the command's PROGRAM SEQUENCE
+//!   (`cd frontend && npm run build` → `cd && npm`) or the file ACTION
+//!   (`create` / `edit`), and every later ask with the same sequence / action
+//!   passes without asking. Plain "Allow" still stores nothing.
+//! - Command patterns split on `&&`/`||`/`;`/`|` and keep each segment's
+//!   first whitespace token. Quotes are not parsed — an operator inside a
+//!   quoted string splits anyway (worst case: an extra ask, never a grant
+//!   wider than the sequence that was shown). Env-prefix assignments are
+//!   kept as the program token (`FOO=1 npm …` → `FOO=1`), not special-cased.
+//! - Pre-#32 rules are not migrated: an old full-command pattern derives its
+//!   own sequence (so `npm test` now grants the whole `npm` family — the
+//!   widening #32 asks for), and an old file path pattern matches nothing.
+//! - There is no delete-file tool; deletion rides Bash, so it is covered by
+//!   command rules (`rm …` → the `rm` family).
 //! - Rules are conversation-scoped (`conversation_id`) or global (`NULL`);
 //!   the effective set for a conversation is global ∪ own, and deleting a
 //!   conversation deletes its scoped rules by FK cascade.
@@ -15,7 +26,7 @@
 use std::path::Path;
 
 use shaim_lib::agent::{control_response_line, permission_target};
-use shaim_lib::commands::{auto_allowed, rule_matches, same_path};
+use shaim_lib::commands::{auto_allowed, rule_matches, rule_pattern_for};
 use shaim_lib::store::{AllowedKind, Store};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -36,28 +47,72 @@ fn rule(kind: AllowedKind, pattern: &str) -> shaim_lib::store::AllowedRule {
 }
 
 #[test]
-fn command_rules_match_bash_exactly() {
-    let r = rule(AllowedKind::Command, "npm test");
-    assert!(rule_matches(&r, "Bash", "npm test"));
-    assert!(rule_matches(&r, "run_command", "npm test"));
-    // A longer command is a DIFFERENT command — no prefix matching.
-    assert!(!rule_matches(&r, "Bash", "npm test --watch"));
-    assert!(!rule_matches(&r, "Bash", "npm  test"), "whitespace is part of the command");
+fn remembered_patterns_store_the_general_form() {
+    // Commands remember the program sequence, not the exact line (#32).
+    assert_eq!(rule_pattern_for("Bash", "npm run build"), "npm");
+    assert_eq!(
+        rule_pattern_for("Bash", "cd frontend && npm run build"),
+        "cd && npm"
+    );
+    assert_eq!(rule_pattern_for("Bash", "cat notes.txt | grep todo"), "cat && grep");
+    // Files remember the action, not the path (#32): Write creates,
+    // Edit/MultiEdit/NotebookEdit edit.
+    assert_eq!(rule_pattern_for("Write", "src/app.rs"), "create");
+    assert_eq!(rule_pattern_for("Edit", "src/app.rs"), "edit");
+    assert_eq!(rule_pattern_for("NotebookEdit", "nb.ipynb"), "edit");
+    // Tools already remember the whole tool.
+    assert_eq!(rule_pattern_for("WebFetch", "https://example.com"), "WebFetch");
+}
+
+#[test]
+fn command_rule_covers_any_command_with_the_same_programs() {
+    let r = rule(AllowedKind::Command, "npm");
+    assert!(rule_matches(&r, "Bash", "npm install"));
+    assert!(rule_matches(&r, "Bash", "npm run dev"));
+    assert!(rule_matches(&r, "run_command", "npm ci"));
+    // A different program family is a different permission.
+    assert!(!rule_matches(&r, "Bash", "git status"));
     // A command rule never covers a different tool.
     assert!(!rule_matches(&r, "Write", "npm test"));
 }
 
 #[test]
-fn file_rules_match_both_spellings_of_one_path() {
-    let r = rule(AllowedKind::File, "src/app.rs");
-    assert!(rule_matches(&r, "Edit", "src/app.rs"));
-    assert!(rule_matches(&r, "Write", "./src/app.rs"));
-    assert!(same_path("src/app.rs", "./src/app.rs"));
-    // A different file is a different permission.
-    assert!(!rule_matches(&r, "Edit", "src/other.rs"));
-    assert!(!same_path("src/app.rs", "src/other.rs"));
+fn command_rules_match_by_program_family() {
+    // A pre-#32 exact pattern derives its own family: `npm test` reads as
+    // `npm` and widens to every npm command (issue #32).
+    let r = rule(AllowedKind::Command, "npm test");
+    assert!(rule_matches(&r, "Bash", "npm test"));
+    assert!(rule_matches(&r, "run_command", "npm test"));
+    assert!(rule_matches(&r, "Bash", "npm test --watch"));
+    assert!(rule_matches(&r, "Bash", "npm  test"), "whitespace is not part of the family");
+    // A different program family is a different permission.
+    assert!(!rule_matches(&r, "Bash", "git status"));
+    // A command rule never covers a different tool.
+    assert!(!rule_matches(&r, "Write", "npm test"));
+}
+
+#[test]
+fn file_rules_match_by_action_not_path() {
+    let create = rule(AllowedKind::File, "create");
+    // Any path, any spelling — the grant is the action, not the file (#32).
+    assert!(rule_matches(&create, "Write", "src/app.rs"));
+    assert!(rule_matches(&create, "Write", "./totally/other.txt"));
+    assert!(rule_matches(&create, "write_file", "docs/readme.md"));
+    // Creating does not grant editing.
+    assert!(!rule_matches(&create, "Edit", "src/app.rs"));
+
+    let edit = rule(AllowedKind::File, "edit");
+    assert!(rule_matches(&edit, "Edit", "src/app.rs"));
+    assert!(rule_matches(&edit, "MultiEdit", "other.rs"));
+    assert!(rule_matches(&edit, "NotebookEdit", "nb.ipynb"));
+    // Editing does not grant creating.
+    assert!(!rule_matches(&edit, "Write", "new.rs"));
+
+    // Pre-#32 path patterns derive no action — they match nothing (left
+    // unmigrated by decision).
+    assert!(!rule_matches(&rule(AllowedKind::File, "src/app.rs"), "Write", "src/app.rs"));
     // File rules never cover commands.
-    assert!(!rule_matches(&r, "Bash", "src/app.rs"));
+    assert!(!rule_matches(&create, "Bash", "src/app.rs"));
 }
 
 #[test]

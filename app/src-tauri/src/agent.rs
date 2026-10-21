@@ -239,6 +239,14 @@ pub fn control_response_line(request_id: &str, allow: bool, input_json: &str) ->
     .to_string()
 }
 
+/// Settings passed with `--settings` on interactive runs (issue #32 HITL):
+/// the CLI's built-in safe-list otherwise runs read-only commands (`git
+/// status`, `ls`, …) without asking, silently bypassing Shaim's gate. An
+/// `ask` rule forces every Bash through the `can_use_tool` ask, where
+/// Shaim's own rules decide. Merged on top of the user's global settings —
+/// their env and providers keep applying.
+pub const BASH_ASK_SETTINGS: &str = r#"{"permissions":{"ask":["Bash"]}}"#;
+
 /// The readable target of a permission ask: the command for shell tools, the
 /// path for file tools, the URL/query for web tools, the bare tool name
 /// otherwise. Shown in the ask and matched against standing rules.
@@ -679,6 +687,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     "default",
                     "--permission-prompt-tool",
                     "stdio",
+                    "--settings",
+                    BASH_ASK_SETTINGS,
                 ]);
             }
             AgentAccess::ReadOnly => {

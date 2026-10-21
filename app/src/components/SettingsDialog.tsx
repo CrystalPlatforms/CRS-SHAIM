@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FileText, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench } from "lucide-react";
+import { FileText, Info, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 
 import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
 import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -39,10 +40,24 @@ interface ServerStatus {
 
 export function SettingsDialog({ open, onClose, onServersChanged }: SettingsDialogProps) {
   const [tab, setTab] = useState<Tab>("servers");
+  const hint = TAB_HINTS[tab];
 
   return (
     <Dialog open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
+      {/* `fixed` in ui/dialog centers the card — adding `relative` here
+          would clobber it (twMerge keeps the later position class). The
+          corner controls anchor to the fixed box directly. */}
       <DialogContent className="max-w-xl">
+        <div className="absolute right-3 top-3 flex items-center gap-1">
+          {hint && <TabInfoHint label={hint.label} text={hint.text} />}
+          <DialogClose
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label="Close settings"
+            title="Close"
+          >
+            <X className="h-4 w-4" />
+          </DialogClose>
+        </div>
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -432,6 +447,46 @@ function ServerFormDialog({
 
 // ---- Allowed tab (issue #28) ---------------------------------------------
 
+/** Corner ⓘ hints per tab: hovering reveals the explainer and it stays open
+ * while the pointer travels onto the card, so the text can be copied. */
+const TAB_HINTS: Partial<Record<Tab, { label: string; text: string }>> = {
+  allowed: {
+    label: "About allowed rules",
+    text: "A command remembers its programs, and any npm command counts. A file action remembers create and edit rights for every path. Both are permanent, so the agent runs them without asking in every conversation. One-off and conversation-scoped approvals are never part of this list.",
+  },
+  skills: {
+    label: "About skills",
+    text: "Enabled skills join system prompts in server-model conversations only — they are never sent to Claude Code or Codex.",
+  },
+  defaults: {
+    label: "About defaults",
+    text: "Conversations fall back to these defaults when they have no model of their own.",
+  },
+};
+
+/** The ⓘ next to the close mark — same ritual as AllowedInfoHint, shared by
+ * every tab that has an entry in TAB_HINTS. */
+function TabInfoHint({ label, text }: { label: string; text: string }) {
+  return (
+    <span className="group relative flex" tabIndex={0} aria-label={label}>
+      <Info className="h-4 w-4 cursor-help text-muted-foreground transition-colors group-hover:text-foreground" />
+      {/* Transparent padding bridges icon and card — no dead zone for the
+          pointer; the card itself carries the visible popover styles and
+          `select-text` so the copy works. */}
+      <span className="pointer-events-none invisible absolute right-0 top-4 z-50 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+        <span className="block pt-3">
+          <span
+            role="tooltip"
+            className="block w-80 select-text rounded-md border border-border bg-popover p-3 text-xs leading-relaxed text-popover-foreground shadow-md"
+          >
+            {text}
+          </span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
 /** Icon + label for one allowed-rule kind. */
 const ALLOWED_KIND_META: Record<
   AllowedRule["kind"],
@@ -471,11 +526,6 @@ function AllowedTab({ open }: { open: boolean }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">
-        Commands, files and tools allowed permanently — the agent runs them
-        without asking, in every conversation. One-off and conversation-scoped
-        approvals never appear here.
-      </p>
 
       {rules.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
@@ -490,6 +540,10 @@ function AllowedTab({ open }: { open: boolean }) {
           {rules.map((rule) => {
             const meta = ALLOWED_KIND_META[rule.kind] ?? ALLOWED_KIND_META.tool;
             const Icon = meta.icon;
+            // File rules store the action (#32) — show it as a phrase, not
+            // a bare verb.
+            const display =
+              rule.kind === "file" ? `${rule.pattern} files` : rule.pattern;
             return (
               <li
                 key={rule.id}
@@ -502,7 +556,7 @@ function AllowedTab({ open }: { open: boolean }) {
                   <Icon className="h-3.5 w-3.5" />
                 </span>
                 <div className="w-0 min-w-0 flex-1">
-                  <div className="truncate font-mono text-xs">{rule.pattern}</div>
+                  <div className="truncate font-mono text-xs">{display}</div>
                   <div className="text-[10px] text-muted-foreground">
                     {meta.label}
                   </div>
@@ -512,7 +566,7 @@ function AllowedTab({ open }: { open: boolean }) {
                   size="icon"
                   className="shrink-0 text-muted-foreground hover:text-destructive"
                   onClick={() => setDeleting(rule)}
-                  aria-label={`Remove ${rule.pattern}`}
+                  aria-label={`Remove ${display}`}
                   title="Remove"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -614,11 +668,6 @@ function SkillsTab({ open }: { open: boolean }) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">
-        Enabled skills join system prompts in server-model conversations only — they are
-        never sent to Claude Code or Codex.
-      </p>
-
       {overCap && (
         <div
           role="alert"
@@ -990,13 +1039,12 @@ function DefaultsTab({ open }: { open: boolean }) {
           <SelectTrigger aria-label="Default server" className="py-2 text-sm">
             <SelectValue>
               {settings?.default_server_id != null
-                ? servers.find((server) => server.id === settings.default_server_id)?.name ??
-                  "— none —"
-                : "— none —"}
+                ? servers.find((server) => server.id === settings.default_server_id)?.name ?? "none"
+                : "none"}
             </SelectValue>
           </SelectTrigger>
           <SelectContent className="text-sm">
-            <SelectItem value="none">— none —</SelectItem>
+            <SelectItem value="none">none</SelectItem>
             {servers.map((server) => (
               <SelectItem key={server.id} value={String(server.id)}>
                 {server.name}
@@ -1044,9 +1092,6 @@ function DefaultsTab({ open }: { open: boolean }) {
       </div>
 
       {saved && <p className="text-xs text-primary">Saved.</p>}
-      <p className="text-xs text-muted-foreground">
-        Conversations fall back to these defaults when they have no model of their own.
-      </p>
     </div>
   );
 }
