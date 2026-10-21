@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatPane } from "@/components/ChatPane";
 import { DetailPane } from "@/components/DetailPane";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { trackAppOpen } from "@/lib/analytics";
 
 /** A pending "open this conversation scrolled to this message" request. */
 interface JumpTarget {
@@ -38,6 +39,11 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // One anonymous launch count per production run (issue #31).
+  useEffect(() => {
+    trackAppOpen();
+  }, []);
 
   const handleCreate = async () => {
     try {

@@ -140,7 +140,6 @@ describe("MessageView", () => {
       content: "## Answer\n\n- one",
       thinking: THINKING,
       images: [],
-      reaction: null,
       skill_name: null,
       created_at: 0,
     };
@@ -158,7 +157,6 @@ describe("MessageView", () => {
       content: "what are these?",
       thinking: null,
       images: [PNG_IMAGE, JPEG_IMAGE],
-      reaction: null,
       skill_name: null,
       created_at: 0,
     };
@@ -178,7 +176,6 @@ describe("MessageView", () => {
       content: "# not a heading, just text",
       thinking: null,
       images: [],
-      reaction: null,
       skill_name: null,
       created_at: 0,
     };
@@ -239,5 +236,38 @@ describe("assistant UI directives (issue #22)", () => {
     );
     expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+});
+
+describe("message actions (issue #29)", () => {
+  it("offers the remaining actions in the context menu but no reactions", async () => {
+    const message: Message = {
+      id: 4,
+      conversation_id: 10,
+      role: "user",
+      content: "right-click me",
+      thinking: null,
+      images: [],
+      skill_name: null,
+      created_at: 0,
+    };
+    render(
+      <MessageView
+        message={message}
+        onEdit={() => {}}
+        onReply={() => {}}
+        onFork={() => {}}
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByText("right-click me"));
+
+    // Menu opens and keeps its non-reaction actions…
+    expect(await screen.findByRole("menuitem", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Fork from this" })).toBeInTheDocument();
+    // …but the reaction picker is gone (issue #29) — no entry, no emoji.
+    expect(screen.queryByRole("menuitem", { name: "React" })).not.toBeInTheDocument();
+    expect(screen.queryByText("👍")).not.toBeInTheDocument();
+    expect(screen.queryByText("❤️")).not.toBeInTheDocument();
   });
 });

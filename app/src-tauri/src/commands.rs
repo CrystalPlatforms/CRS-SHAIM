@@ -1934,18 +1934,6 @@ pub fn delete_message(state: State<'_, AppState>, message_id: i64) -> CmdResult<
     with_store(&state, |store| store.delete_message(message_id))
 }
 
-/// Toggles a personal emoji reaction; `None` clears it.
-#[tauri::command]
-pub fn set_reaction(
-    state: State<'_, AppState>,
-    message_id: i64,
-    reaction: Option<String>,
-) -> CmdResult<()> {
-    with_store(&state, |store| {
-        store.set_reaction(message_id, reaction.as_deref())
-    })
-}
-
 /// Copies the selected message and everything after it into a new
 /// conversation. The UI only triggers it — the semantics live in the Store.
 #[tauri::command]

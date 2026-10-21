@@ -81,7 +81,6 @@ pub fn run() {
             commands::edit_message,
             commands::stop_generation,
             commands::delete_message,
-            commands::set_reaction,
             commands::fork_conversation,
             commands::search_messages,
             commands::list_project_files,

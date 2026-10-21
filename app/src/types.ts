@@ -39,7 +39,6 @@ export interface Message {
   content: string;
   thinking: string | null;
   images: string[];
-  reaction: string | null;
   /** Skill invoked with `/` on this message — display metadata only. */
   skill_name: string | null;
   created_at: number;

@@ -131,10 +131,14 @@ interface ConversationStream {
   /** The open permission ask (issue #28) — resurfaced on reopen too. */
   permission: PermissionAsk | null;
   /** Assistant-enqueued follow-ups (shaim-queue, issue #22) waiting to be
-   * sent after the current generation ends. */
+   * sent. Mid-run they ride the brain's live session; after it, the next
+   * generation. */
   queue: string[];
   /** Which send pipeline the queue rides on — set by the last send(). */
   sendMode: "agent" | "chat";
+  /** Stop already requested for this run to hand the queue its turn —
+   * one stop per run, even if more step boundaries scroll by. */
+  steerStop: boolean;
 }
 
 /** A message being edited: sending continues the conversation from it. */
@@ -563,6 +567,7 @@ export function ChatPane({
         permission: null,
         queue: [],
         sendMode: "chat",
+        steerStop: false,
       };
       streamsRef.current.set(conversationId, entry);
     }
@@ -803,7 +808,6 @@ export function ChatPane({
                   content: event.content,
                   thinking: null,
                   images: event.images,
-                  reaction: null,
                   skill_name: event.skill_name,
                   created_at: Math.floor(Date.now() / 1000),
                 },
@@ -821,6 +825,10 @@ export function ChatPane({
             // The id arrives before the stream does — Stop works mid-flight
             // (the command itself only returns once everything finished).
             live.generationId = event.generation_id;
+            // Every generation — composer-sent or queue-flushed — gets a
+            // clean shot at handing the queue its turn at the first step
+            // boundary.
+            live.steerStop = false;
             break;
           case "thinking":
             live.buffer.thinking += event.text;
@@ -858,6 +866,19 @@ export function ChatPane({
           case "activity_end": {
             const target = lastActivity(live.buffer.segments);
             if (target) target.open = false;
+            // A step just closed and something is queued (issue #22
+            // follow-up): stop this run right at the clean boundary — the
+            // end-of-run flush then sends the queue head as the next
+            // generation. Works for every brain (Claude, Codex, server).
+            if (live.queue.length > 0 && !live.steerStop && live.generationId != null) {
+              live.steerStop = true;
+              const generationId = live.generationId;
+              invoke("stop_generation", { generationId }).catch(() => {
+                // Stop failed — the run continues, the next step boundary
+                // gets another chance.
+                live.steerStop = false;
+              });
+            }
             break;
           }
           case "permission_request":
@@ -890,7 +911,6 @@ export function ChatPane({
                   content: event.content,
                   thinking: event.thinking.length > 0 ? event.thinking : null,
                   images: [],
-                  reaction: null,
                   skill_name: null,
                   created_at: Math.floor(Date.now() / 1000),
                 },
@@ -1466,18 +1486,6 @@ export function ChatPane({
     runCommand(conversation.id, "regenerate", {});
   }, [conversation, runCommand]);
 
-  /** Persists the reaction choice resolved by the menu (emoji or clear). */
-  const react = useCallback(async (messageId: number, emoji: string | null) => {
-    try {
-      await invoke("set_reaction", { messageId, reaction: emoji });
-      setMessages((current) =>
-        current.map((m) => (m.id === messageId ? { ...m, reaction: emoji } : m)),
-      );
-    } catch (err) {
-      console.error("Failed to set reaction:", err);
-    }
-  }, []);
-
   /** Opens the reply chip above the composer: a gray italic snippet of the
    * message; the full quote joins the sent message. */
   const replyTo = useCallback((message: Message) => {
@@ -1822,11 +1830,6 @@ export function ChatPane({
                   !isAgent && !isCliBrain && message.role === "user"
                     ? () => startEdit(message)
                     : undefined
-                }
-                onReact={
-                  message.role === "tool"
-                    ? undefined
-                    : (emoji) => void react(message.id, emoji)
                 }
                 onReply={
                   message.role === "tool" ? undefined : () => replyTo(message)

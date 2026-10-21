@@ -1,5 +1,4 @@
-//! Fork from this (issue #9) plus the reaction toggle that lives on the same
-//! message actions.
+//! Fork from this (issue #9).
 //!
 //! Assumptions these tests encode:
 //! - Forking copies exactly the selected message and everything after it
@@ -9,8 +8,6 @@
 //!   included) and takes a sane title from the message it starts at.
 //! - Forking is one INSERT..SELECT, so a 1 000-message conversation forks
 //!   well under 100 ms.
-//! - Reactions are a single nullable emoji per message (single-user app):
-//!   set, replace, clear.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -51,7 +48,6 @@ fn fork_copies_exactly_from_the_selected_message_onward() {
     let store = open("fork-semantics");
     let conv = store.create_conversation(None).unwrap();
     let ids = seed_thread(&store, conv.id, 10);
-    store.set_reaction(ids[6], Some("👍")).unwrap();
 
     // Fork from message 5 of 10: the new thread starts there.
     let fork = store.fork_conversation(conv.id, ids[5]).unwrap();
@@ -61,15 +57,10 @@ fn fork_copies_exactly_from_the_selected_message_onward() {
     assert_eq!(forked.len(), 5, "messages 5..=9 only — nothing before");
     assert_eq!(forked[0].content, "message 0005");
     assert_eq!(forked[4].content, "message 0009");
-    // Roles, reactions and attachments travel with the copy. (Index 5 is
-    // odd, so the fork starts on an assistant message.)
+    // Roles and attachments travel with the copy. (Index 5 is odd, so the
+    // fork starts on an assistant message.)
     let roles: Vec<&str> = forked.iter().map(|m| m.role.as_str()).collect();
     assert_eq!(roles, vec!["assistant", "user", "assistant", "user", "assistant"]);
-    let reacted = forked
-        .iter()
-        .find(|m| m.content == "message 0006")
-        .expect("message 6 belongs to the fork");
-    assert_eq!(reacted.reaction.as_deref(), Some("👍"));
 
     // New rows, not shared ones: fresh ids in the fork.
     assert_ne!(forked[0].id, ids[5]);
@@ -148,31 +139,4 @@ fn fork_of_a_1000_message_conversation_completes_under_100ms() {
     );
     assert_eq!(store.list_messages(fork.id).unwrap().len(), 500);
     assert_eq!(store.list_messages(conv.id).unwrap().len(), 1000);
-}
-
-// ---- Reactions -----------------------------------------------------------------
-
-#[test]
-fn reaction_toggles_set_replace_and_clear() {
-    let store = open("reactions");
-    let conv = store.create_conversation(None).unwrap();
-    let message_id = store.insert_message(conv.id, "assistant", "reply").unwrap();
-
-    assert_eq!(store.get_message(message_id).unwrap().reaction, None);
-    store.set_reaction(message_id, Some("❤️")).unwrap();
-    assert_eq!(
-        store.get_message(message_id).unwrap().reaction.as_deref(),
-        Some("❤️")
-    );
-
-    // Picking a different emoji replaces the previous one…
-    store.set_reaction(message_id, Some("😂")).unwrap();
-    assert_eq!(
-        store.get_message(message_id).unwrap().reaction.as_deref(),
-        Some("😂")
-    );
-
-    // …and picking the same one again clears it (None).
-    store.set_reaction(message_id, None).unwrap();
-    assert_eq!(store.get_message(message_id).unwrap().reaction, None);
 }

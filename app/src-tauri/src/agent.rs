@@ -308,6 +308,21 @@ impl StdinHandle {
     }
 }
 
+/// One stream-json user message for stdin-driven sessions (Claude Code in
+/// the interactive-permission mode): the intro prompt and mid-run queue
+/// delivery share the shape.
+fn stream_json_user_message(text: &str) -> String {
+    serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": text }],
+        },
+        "parent_tool_use_id": null,
+    })
+    .to_string()
+}
+
 impl AgentRunner {
     /// Spawns the adapter's CLI headless in `cwd`, forwards every parsed
     /// event through `on_event`, and folds the whole stream into segments.
@@ -703,15 +718,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         if access != AgentAccess::Full {
             return None;
         }
-        let message = serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [{ "type": "text", "text": prompt }],
-            },
-            "parent_tool_use_id": null,
-        });
-        Some(message.to_string())
+        Some(stream_json_user_message(prompt))
     }
 
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent> {

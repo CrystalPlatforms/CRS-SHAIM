@@ -1,4 +1,4 @@
-import { Copy, Pencil, RefreshCw, Reply, Scissors, SmilePlus, Trash2, X } from "lucide-react";
+import { Copy, Pencil, RefreshCw, Reply, Scissors, Trash2, X } from "lucide-react";
 
 import type { Message } from "@/types";
 import { isReasoningTitle, parseActivity } from "@/types";
@@ -11,14 +11,8 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-
-/** Personal reactions offered in the context menu (single-user app). */
-export const REACTION_EMOJIS = ["👍", "👎", "❤️", "😂", "🤯"] as const;
 
 interface MessageViewProps {
   message: Message;
@@ -29,8 +23,6 @@ interface MessageViewProps {
   onRegenerate?: () => void;
   /** Edit affordance — the user's own messages. */
   onEdit?: () => void;
-  /** Toggles a reaction; `null` clears it. */
-  onReact?: (emoji: string | null) => void;
   onReply?: () => void;
   onDelete?: () => void;
   onFork?: () => void;
@@ -48,7 +40,6 @@ export function MessageView({
   showRegenerate = false,
   onRegenerate,
   onEdit,
-  onReact,
   onReply,
   onDelete,
   onFork,
@@ -80,18 +71,6 @@ export function MessageView({
         )}
       </div>
     );
-
-  const reactionChip = message.reaction ? (
-    <button
-      type="button"
-      onClick={() => onReact?.(null)}
-      aria-label={`Remove reaction ${message.reaction}`}
-      title="Remove reaction"
-      className="mt-1 rounded-full border border-border bg-card px-1.5 py-0.5 text-xs hover:border-destructive/50"
-    >
-      {message.reaction}
-    </button>
-  ) : null;
 
   const body =
     message.role === "user" ? (
@@ -130,7 +109,6 @@ export function MessageView({
             )}
           </div>
         </div>
-        {reactionChip}
       </div>
     ) : message.role === "tool" ? (
       // Agent output between messages: reasoning renders as plain italic
@@ -194,7 +172,6 @@ export function MessageView({
             </div>
           )}
           {controls && <div className="mt-1">{controls}</div>}
-          {reactionChip}
         </div>
       </div>
     );
@@ -218,27 +195,6 @@ export function MessageView({
             <Reply className="mr-2 h-4 w-4" />
             Reply
           </ContextMenuItem>
-        )}
-        {onReact && (
-          <ContextMenuSub>
-            <ContextMenuSubTrigger>
-              <SmilePlus className="mr-2 h-4 w-4" />
-              React
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              {REACTION_EMOJIS.map((emoji) => (
-                <ContextMenuItem
-                  key={emoji}
-                  onSelect={() =>
-                    onReact(message.reaction === emoji ? null : emoji)
-                  }
-                >
-                  <span className="mr-2">{emoji}</span>
-                  {message.reaction === emoji ? "Remove" : null}
-                </ContextMenuItem>
-              ))}
-            </ContextMenuSubContent>
-          </ContextMenuSub>
         )}
         {onFork && (
           <ContextMenuItem onSelect={onFork}>

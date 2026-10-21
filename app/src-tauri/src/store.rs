@@ -158,7 +158,6 @@ pub struct Message {
     pub content: String,
     pub thinking: Option<String>,
     pub images: Vec<String>,
-    pub reaction: Option<String>,
     pub skill_name: Option<String>,
     pub created_at: i64,
 }
@@ -229,7 +228,7 @@ pub struct AllowedRule {
 const CONVERSATION_COLUMNS: &str =
     "id, title, server_id, model_id, mode, agent_kind, project_path, system_prompt, temperature, context_len, thinking, created_at, updated_at";
 const MESSAGE_COLUMNS: &str =
-    "id, conversation_id, role, content, thinking, images, reaction, skill_name, created_at";
+    "id, conversation_id, role, content, thinking, images, skill_name, created_at";
 const SKILL_COLUMNS: &str =
     "id, name, description, kind, enabled, path, size_bytes, created_at";
 const ALLOWED_RULE_COLUMNS: &str = "id, conversation_id, kind, pattern, created_at";
@@ -267,7 +266,6 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT NOT NULL,
     thinking        TEXT,
     images          TEXT NOT NULL DEFAULT '[]',
-    reaction        TEXT,
     skill_name      TEXT,
     created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -916,18 +914,6 @@ impl Store {
         Ok(changed)
     }
 
-    /// Sets or clears (`None`) the message's personal emoji reaction.
-    pub fn set_reaction(&self, id: i64, reaction: Option<&str>) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE messages SET reaction = ?1 WHERE id = ?2",
-            rusqlite::params![reaction, id],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows));
-        }
-        Ok(())
-    }
-
     /// Forks the conversation at `from_message_id`: that message and
     /// everything after it are copied into a brand-new conversation; nothing
     /// before is cloned and the original is left byte-identical. The fork
@@ -960,8 +946,8 @@ impl Store {
         )?;
         let new_id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO messages (conversation_id, role, content, thinking, images, reaction, skill_name, created_at)
-             SELECT ?1, role, content, thinking, images, reaction, skill_name, created_at
+            "INSERT INTO messages (conversation_id, role, content, thinking, images, skill_name, created_at)
+             SELECT ?1, role, content, thinking, images, skill_name, created_at
              FROM messages
              WHERE conversation_id = ?2 AND id >= ?3
              ORDER BY id",
@@ -1143,9 +1129,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         content: row.get(3)?,
         thinking: row.get(4)?,
         images,
-        reaction: row.get(6)?,
-        skill_name: row.get(7)?,
-        created_at: row.get(8)?,
+        skill_name: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 

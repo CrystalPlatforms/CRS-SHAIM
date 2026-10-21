@@ -321,7 +321,6 @@ fn messages_round_trip_with_thinking_and_images() {
         "thinking must round-trip"
     );
     assert_eq!(loaded.images, images, "images must round-trip unchanged");
-    assert_eq!(loaded.reaction, None);
 
     // Partial content (an aborted stream) persists like any other message.
     let partial = store

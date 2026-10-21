@@ -14,7 +14,6 @@ const base = (over: Partial<Message>): Message => ({
   content: "",
   thinking: null,
   images: [],
-  reaction: null,
   skill_name: null,
   created_at: 0,
   ...over,
