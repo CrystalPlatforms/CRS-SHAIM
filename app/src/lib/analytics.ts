@@ -1,7 +1,7 @@
 /**
  * Anonymous launch counter (issue #31). Each production launch increments
  * one public counter — no identifiers, no content, no cookies, just a
- * number going up so we can tell roughly how many people run Shaim.
+ * number going up so we can tell roughly how many people run Klepai.
  *
  * counterapi.dev v2 needs a key (v1 was retired): create a free account at
  * https://counterapi.dev/signup, generate an API key in the dashboard and

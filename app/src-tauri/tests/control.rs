@@ -20,19 +20,19 @@ mod support;
 
 use std::path::PathBuf;
 
-use shaim_lib::commands::resolve_target;
-use shaim_lib::gateway::{ChatTurn, Gateway};
-use shaim_lib::store::Store;
+use klepai_lib::commands::resolve_target;
+use klepai_lib::gateway::{ChatTurn, Gateway};
+use klepai_lib::store::Store;
 use support::{MockResponse, MockServer};
 
 fn temp_db(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "shaim-control-tests-{}-{}",
+        "klepai-control-tests-{}-{}",
         std::process::id(),
         name
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    dir.join("shaim.db")
+    dir.join("klepai.db")
 }
 
 fn open(name: &str) -> Store {
@@ -230,12 +230,12 @@ fn conversation_without_prompt_falls_back_to_the_default_system_prompt() {
     // The app-wide default kicks in for "Use default" (no conversation
     // prompt)…
     store
-        .set_default_system_prompt(Some("You are Shaim. Be precise."))
+        .set_default_system_prompt(Some("You are Klepai. Be precise."))
         .unwrap();
     let (_, _, options) = resolve_target(&store, conv.id).unwrap();
     assert_eq!(
         options.system_prompt.as_deref(),
-        Some("You are Shaim. Be precise.")
+        Some("You are Klepai. Be precise.")
     );
 
     // …but an explicit conversation prompt still wins over the default.

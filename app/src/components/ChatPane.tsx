@@ -42,7 +42,7 @@ import { StreamStatus } from "@/components/loaders/StreamStatus";
 import { AgentLoader } from "@/components/loaders/AgentLoader";
 import { ActivityBlock } from "@/components/ActivityBlock";
 import { paletteSelection, skillRows } from "@/lib/skillPalette";
-import { extractLastShaimTodos, parseTodoWrite, type TodoItem } from "@/lib/shaimBlocks";
+import { extractLastKlepaiTodos, parseTodoWrite, type TodoItem } from "@/lib/klepaiBlocks";
 import { GoalProgressWidget } from "@/components/GoalProgress";
 import { cn } from "@/lib/utils";
 
@@ -130,7 +130,7 @@ interface ConversationStream {
   error: string | null;
   /** The open permission ask (issue #28) — resurfaced on reopen too. */
   permission: PermissionAsk | null;
-  /** Assistant-enqueued follow-ups (shaim-queue, issue #22) waiting to be
+  /** Assistant-enqueued follow-ups (klepai-queue, issue #22) waiting to be
    * sent. Mid-run they ride the brain's live session; after it, the next
    * generation. */
   queue: string[];
@@ -173,7 +173,7 @@ interface AskButton {
 }
 
 /** One row of the composer suggestion palette. `skillId` marks a one-shot
- * Shaim library skill — picking it attaches the skill to the next send
+ * Klepai library skill — picking it attaches the skill to the next send
  * instead of inserting text (those rows carry no insert text). */
 interface SuggestionItem {
   label: string;
@@ -230,7 +230,7 @@ function lastActivity(segments: StreamSegment[]): Extract<StreamSegment, { kind:
 }
 
 /** The assistant's latest goal-progress state from the live buffer (issue
- * #22): the newest TodoWrite activity or shaim-todos block wins. Reading
+ * #22): the newest TodoWrite activity or klepai-todos block wins. Reading
  * backwards keeps the widget on "what the agent is doing now". */
 function latestTodos(segments: StreamSegment[]): TodoItem[] | null {
   for (let i = segments.length - 1; i >= 0; i--) {
@@ -239,7 +239,7 @@ function latestTodos(segments: StreamSegment[]): TodoItem[] | null {
       const todos = parseTodoWrite(segment.detail);
       if (todos) return todos;
     } else {
-      const todos = extractLastShaimTodos(segment.text);
+      const todos = extractLastKlepaiTodos(segment.text);
       if (todos) return todos;
     }
   }
@@ -481,7 +481,7 @@ export function ChatPane({
   >(null);
   /** Skills installed for the conversation's CLI brain. */
   const [skills, setSkills] = useState<SkillInfo[]>([]);
-  /** Shaim's own skill library — the "/" palette lists it in every mode. */
+  /** Klepai's own skill library — the "/" palette lists it in every mode. */
   const [librarySkills, setLibrarySkills] = useState<StoredSkill[]>([]);
   /** Skill invoked from the palette: attaches ONE-SHOT to the next send,
    * independent of the skill's global enable toggle. */
@@ -514,7 +514,7 @@ export function ChatPane({
   const isCliBrain = conversation?.agent_kind != null;
 
   // Skills of the current brain — the "/" palette merges them in, "$"
-  // shows them alone. The Shaim library rides in every mode; switching
+  // shows them alone. The Klepai library rides in every mode; switching
   // conversations drops a pending one-shot attach.
   useEffect(() => {
     setInvokedSkill(null);
@@ -549,10 +549,10 @@ export function ChatPane({
     reload();
     // Settings → Skills broadcasts after every change (toggle, import,
     // edit, delete) so the palette never offers a stale set.
-    window.addEventListener("shaim:skills-changed", reload);
+    window.addEventListener("klepai:skills-changed", reload);
     return () => {
       cancelled = true;
-      window.removeEventListener("shaim:skills-changed", reload);
+      window.removeEventListener("klepai:skills-changed", reload);
     };
   }, [conversation?.id]);
   /** The conversation's stream entry, created on first use. */
@@ -1090,7 +1090,7 @@ export function ChatPane({
     return pre.toString();
   }, []);
 
-  /** Opens the "/" palette (Shaim library skills in EVERY mode, plus the
+  /** Opens the "/" palette (Klepai library skills in EVERY mode, plus the
    * CLI's built-in commands and installed skills where a CLI brain is set),
    * or the "@" file palette (Agent mode only) from the token under the
    * caret. Files resolve from the project folder with a short debounce —
@@ -1150,7 +1150,7 @@ export function ChatPane({
     }
     const agentKind = conversation.agent_kind;
     // CLI rows (commands + the CLI's own installed skills) insert text for
-    // the CLI to run; the Shaim library rows attach one-shot instead.
+    // the CLI to run; the Klepai library rows attach one-shot instead.
     const commandRows = (agentKind != null && match[2] === "/" ? AGENT_COMMANDS[agentKind] : [])
       .filter((entry) => query.length === 0 || contains(entry.cmd) || contains(entry.hint))
       .map((entry) => ({
@@ -1723,7 +1723,7 @@ export function ChatPane({
           </div>
         )}
         <h2 className="font-display text-9xl leading-none animate-fade-in">
-          Shaim
+          Klepai
         </h2>
       </section>
     );
@@ -1929,7 +1929,7 @@ export function ChatPane({
             </Button>
           </div>
         )}
-        {/* Queued follow-ups (issue #22): the assistant's shaim-queue items
+        {/* Queued follow-ups (issue #22): the assistant's klepai-queue items
             wait here and go out one by one once the generation ends. */}
         {queue.length > 0 && (
           <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
@@ -2708,7 +2708,7 @@ function StreamingMessage({ stream }: { stream: StreamState }) {
   })();
   return (
     <div className="flex w-full justify-start px-1">
-      <div className="w-full max-w-[85%] min-w-0 space-y-2 has-[[data-shaim-table]]:max-w-full">
+      <div className="w-full max-w-[85%] min-w-0 space-y-2 has-[[data-klepai-table]]:max-w-full">
         {stream.thinking.length > 0 && (
           <p className="animate-fade-in mb-1 whitespace-pre-wrap text-xs italic text-muted-foreground">
             {stream.thinking}

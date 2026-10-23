@@ -2,21 +2,21 @@
 //
 // Assumptions encoded by these tests (stated before RED):
 // - Copy is English (PRD: "UI copy in English").
-// - Hero copy: "Shaim — self-hosted LLM manager" (PRD story 38, em dash).
+// - Hero copy: "Klepai — self-hosted LLM manager" (PRD story 38, em dash).
 // - The three features (PRD story 38 / issue body):
 //     1. connect Ollama & any OpenAI-compatible server
 //     2. rich chat — code blocks, thinking
 //     3. agents in chat — Alpha
 // - Footer: "by CrystalPlatforms".
-// - Dark CRS-Theme palette: the public tweakcn page exposes the light variant
-//   only, so dark neutrals are derived from the theme's neutral gray family
-//   (background #0a0a0a, card #1a1a1a, border #262626, muted-foreground
-//   #a3a3a3); primary #2bc585 and ring #8ee9be are taken 1:1 from the theme.
-//   Owner design review (HITL) confirms the final dark values.
-// - Logo is a file reference to assets/shaim-logo.png — the only external
-//   asset allowed by the issue (no data URI per owner decision).
+// - Dark CRS-Theme palette, re-branded gold (owner decision 2026-10-23):
+//   primary #d4af37 (electric gold, slightly deepened) with dark ink
+//   #262009 on it; dark neutrals unchanged (background #0a0a0a, card
+//   #1a1a1a, border #262626, muted-foreground #a3a3a3), ring #ecd28c.
+// - Header brand is the sign image (assets/transparent/klepai-sign-trans.png)
+//   — the FIRST <img> on the page; the hero logo
+//   (assets/transparent/klepai-logo-trans.png) follows in the hero.
 // - NOT tested in this iteration: responsive pixel-perfection, < 2 s load and
-//   zero console errors on shaim.pages.dev (HITL after owner deploy).
+//   zero console errors on klepai.pages.dev (HITL after owner deploy).
 //
 // Tests exercise the public interface: the page served over HTTP, exactly as
 // a browser or Cloudflare Pages would fetch it.
@@ -97,7 +97,7 @@ test('hero actions link to the repo and Crystal Studio, opening in a new tab', a
     href: m[1],
   }));
   const repo = anchors.find((a) =>
-    /^https:\/\/github\.com\/CrystalPlatforms\/CRS-SHAIM\/?$/i.test(a.href)
+    /^https:\/\/github\.com\/CrystalPlatforms\/klepai\/?$/i.test(a.href)
   );
   const studio = anchors.find((a) => /^https:\/\/crystal-studio\.dev\/?$/i.test(a.href));
   assert.ok(repo, 'there is a link to the GitHub repo');
@@ -120,9 +120,9 @@ function backgroundLuminance(html) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-test('CRS-Theme palette: primary #2bc585 on a dark background', async () => {
+test('CRS-Theme palette: primary #d4af37 gold on a dark background', async () => {
   const { html } = await fetchPage();
-  assert.match(html, /--primary\s*:\s*#2bc585/i, 'primary green is the CRS-Theme primary');
+  assert.match(html, /--primary\s*:\s*#d4af37/i, 'primary gold is the Klepai brand color');
   const lum = backgroundLuminance(html);
   assert.ok(lum !== null, '--background is defined as a hex color');
   assert.ok(lum < 0.2, `background is dark (luminance ${lum.toFixed(3)}, CRS-Theme dark-first)`);
@@ -130,15 +130,21 @@ test('CRS-Theme palette: primary #2bc585 on a dark background', async () => {
 
 // --- Cycle 6: logo ----------------------------------------------------------
 
-test('Shaim logo is visible and actually served', async () => {
+test('Klepai header sign and hero logo are visible and actually served', async () => {
   const { html } = await fetchPage();
-  const img = html.match(/<img[^>]+>/i);
-  assert.ok(img, 'page has an <img> logo');
-  assert.match(img[0], /src=["']assets\/shaim-logo\.png["']/i, 'logo comes from assets/');
-  assert.match(img[0], /alt=["'][^"']*shaim[^"']*["']/i, 'logo has a Shaim alt text');
-  const logo = await fetch(`${base}/assets/shaim-logo.png`);
-  assert.equal(logo.status, 200, 'logo file exists and is served');
-  assert.match(logo.headers.get('content-type') ?? '', /image\/png/);
+  const imgs = [...html.matchAll(/<img[^>]+>/gi)].map((m) => m[0]);
+  assert.ok(imgs.length >= 2, 'page has the header sign and the hero logo');
+  assert.match(imgs[0], /src=["']assets\/transparent\/klepai-sign-trans\.png["']/i, 'header brand is the sign image');
+  assert.match(imgs[0], /alt=["'][^"']*klepai[^"']*["']/i, 'sign has a Klepai alt text');
+  const logo = imgs.find((t) => /klepai-logo-trans\.png/i.test(t));
+  assert.ok(logo, 'hero logo is present');
+  assert.match(logo, /alt=["'][^"']*klepai[^"']*["']/i, 'logo has a Klepai alt text');
+  const sign = await fetch(`${base}/assets/transparent/klepai-sign-trans.png`);
+  assert.equal(sign.status, 200, 'sign file exists and is served');
+  assert.match(sign.headers.get('content-type') ?? '', /image\/png/);
+  const logoFile = await fetch(`${base}/assets/transparent/klepai-logo-trans.png`);
+  assert.equal(logoFile.status, 200, 'logo file exists and is served');
+  assert.match(logoFile.headers.get('content-type') ?? '', /image\/png/);
 });
 
 // --- Cycle 5: self-contained static file ----------------------------------
@@ -162,12 +168,12 @@ test('footer credits "by CrystalPlatforms"', async () => {
 
 // --- Cycle 2: hero --------------------------------------------------------
 
-test('hero states "Shaim — self-hosted LLM manager"', async () => {
+test('hero states "Klepai — self-hosted LLM manager"', async () => {
   const { html } = await fetchPage();
   const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
   assert.ok(h1, 'page has an <h1> hero heading');
   const text = h1[1].replace(/\s+/g, ' ').trim();
-  assert.match(text, /^Shaim\s*—\s*self-hosted LLM manager$/i);
+  assert.match(text, /^Klepai\s*—\s*self-hosted LLM manager$/i);
 });
 
 // --- Cycle 3: feature list ------------------------------------------------

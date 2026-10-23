@@ -11,16 +11,16 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use shaim_lib::store::Store;
+use klepai_lib::store::Store;
 
 fn temp_db(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "shaim-search-tests-{}-{}",
+        "klepai-search-tests-{}-{}",
         std::process::id(),
         name
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    dir.join("shaim.db")
+    dir.join("klepai.db")
 }
 
 fn open(name: &str) -> Store {

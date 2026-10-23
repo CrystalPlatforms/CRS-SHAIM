@@ -152,7 +152,7 @@
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
   --font-serif: var(--font-serif);
-  /* Brand display face for the "Shaim" wordmark. */
+  /* Brand display face for the "Klepai" wordmark. */
   --font-display: "ADLaM Display", ui-sans-serif, system-ui, sans-serif;
 
   --radius-sm: calc(var(--radius) - 4px);

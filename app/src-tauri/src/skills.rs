@@ -2,7 +2,7 @@
 //!
 //! Deep module: import, listing, toggle, content read/write, delete and
 //! size accounting all go through it; nothing else touches skill files.
-//! Shaim never executes skill scripts — it only stores them and hands the
+//! Klepai never executes skill scripts — it only stores them and hands the
 //! instruction text to the consumer at send time: the server-model system
 //! prompt and the agent CLI prompt (see [`SkillPrompt`]).
 

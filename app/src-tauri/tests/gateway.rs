@@ -20,8 +20,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use shaim_lib::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, Gateway};
-use shaim_lib::store::ServerKind;
+use klepai_lib::gateway::{AbortFlag, ChatEvent, ChatOptions, ChatTurn, Endpoint, Gateway};
+use klepai_lib::store::ServerKind;
 use support::{MockResponse, MockServer};
 
 fn endpoint(base: &str, kind: ServerKind, api_key: Option<&str>) -> Endpoint {

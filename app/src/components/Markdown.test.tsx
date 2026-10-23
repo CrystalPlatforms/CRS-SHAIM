@@ -20,7 +20,7 @@ import type { Message } from "@/types";
 import { MarkdownMessage, ThinkingBlock } from "@/components/Markdown";
 import { MessageView } from "@/components/MessageView";
 
-const FIXTURE_MARKDOWN = `# Shaim Rendering Fixture
+const FIXTURE_MARKDOWN = `# Klepai Rendering Fixture
 
 ## Lists
 
@@ -39,7 +39,7 @@ const FIXTURE_MARKDOWN = `# Shaim Rendering Fixture
 
 > A blockquote with a thought worth keeping.
 
-A link to [Shaim on the web](https://shaim.pages.dev) and some \`inline code\` too.
+A link to [Klepai on the web](https://klepai.pages.dev) and some \`inline code\` too.
 
 \`\`\`rust
 fn main() {
@@ -74,7 +74,7 @@ describe("MarkdownMessage", () => {
   it("renders the full fixture: headings, lists, table, blockquote, link, inline code", () => {
     render(<MarkdownMessage content={FIXTURE_MARKDOWN} />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Shaim Rendering Fixture" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Klepai Rendering Fixture" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Lists" })).toBeInTheDocument();
 
     expect(screen.getByText("first bullet")).toBeInTheDocument();
@@ -87,8 +87,8 @@ describe("MarkdownMessage", () => {
 
     expect(screen.getByText("A blockquote with a thought worth keeping.")).toBeInTheDocument();
 
-    const link = screen.getByRole("link", { name: "Shaim on the web" });
-    expect(link).toHaveAttribute("href", "https://shaim.pages.dev");
+    const link = screen.getByRole("link", { name: "Klepai on the web" });
+    expect(link).toHaveAttribute("href", "https://klepai.pages.dev");
 
     expect(screen.getByText("inline code")).toBeInTheDocument();
   });
@@ -187,10 +187,10 @@ describe("MessageView", () => {
 });
 
 describe("assistant UI directives (issue #22)", () => {
-  it("renders a shaim-table directive as an interactive data table", () => {
+  it("renders a klepai-table directive as an interactive data table", () => {
     render(
       <MarkdownMessage
-        content={"Here:\n\n```shaim-table\nname,score\nAda,99\nBo,70\n```"}
+        content={"Here:\n\n```klepai-table\nname,score\nAda,99\nBo,70\n```"}
       />,
     );
     expect(screen.getByRole("table")).toBeInTheDocument();
@@ -198,11 +198,11 @@ describe("assistant UI directives (issue #22)", () => {
     expect(screen.getByText("Ada")).toBeInTheDocument();
   });
 
-  it("renders a shaim-todos directive as nothing in the thread — the pinned widget shows it live", () => {
+  it("renders a klepai-todos directive as nothing in the thread — the pinned widget shows it live", () => {
     const { container } = render(
       <MarkdownMessage
         content={
-          '```shaim-todos\n{"items":[{"label":"Plan","status":"done"},{"label":"Build","status":"active"}]}\n```'
+          '```klepai-todos\n{"items":[{"label":"Plan","status":"done"},{"label":"Build","status":"active"}]}\n```'
         }
       />,
     );
@@ -213,15 +213,15 @@ describe("assistant UI directives (issue #22)", () => {
     expect(body?.children.length ?? 1).toBe(0);
   });
 
-  it("renders a shaim-ts directive as a timestamp divider", () => {
-    render(<MarkdownMessage content={"```shaim-ts\nToday\n```"} />);
+  it("renders a klepai-ts directive as a timestamp divider", () => {
+    render(<MarkdownMessage content={"```klepai-ts\nToday\n```"} />);
     expect(screen.getByText("Today")).toBeInTheDocument();
   });
 
-  it("renders an unknown shaim-* block (queue was retired) as plain code", () => {
+  it("renders an unknown klepai-* block (queue was retired) as plain code", () => {
     render(
       <MarkdownMessage
-        content={"```shaim-queue\nRun the tests now\n```"}
+        content={"```klepai-queue\nRun the tests now\n```"}
       />,
     );
     expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
@@ -231,7 +231,7 @@ describe("assistant UI directives (issue #22)", () => {
   it("degrades a malformed table directive back to a plain code block", () => {
     render(
       <MarkdownMessage
-        content={"```shaim-table\njust some words\n```"}
+        content={"```klepai-table\njust some words\n```"}
       />,
     );
     expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();

@@ -18,14 +18,14 @@
 
 use std::path::PathBuf;
 
-use shaim_lib::commands::{apply_skill_injection, resolve_target};
-use shaim_lib::gateway::ChatOptions;
-use shaim_lib::skills::{SkillStore, SIZE_CAP_BYTES};
-use shaim_lib::store::Store;
+use klepai_lib::commands::{apply_skill_injection, resolve_target};
+use klepai_lib::gateway::ChatOptions;
+use klepai_lib::skills::{SkillStore, SIZE_CAP_BYTES};
+use klepai_lib::store::Store;
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "shaim-injection-tests-{}-{}",
+        "klepai-injection-tests-{}-{}",
         std::process::id(),
         name
     ));
@@ -72,7 +72,7 @@ fn injected_prompt(store: &Store, skills: &SkillStore, conv: i64, skill_id: Opti
 #[test]
 fn enabled_skill_content_reaches_the_system_prompt_and_disabled_does_not() {
     let dir = temp_dir("enabled-disabled");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
 
@@ -109,7 +109,7 @@ fn enabled_skill_content_reaches_the_system_prompt_and_disabled_does_not() {
 #[test]
 fn request_assembly_respects_the_size_cap() {
     let dir = temp_dir("cap");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
 
@@ -154,7 +154,7 @@ fn request_assembly_respects_the_size_cap() {
 #[test]
 fn a_disabled_skill_is_unavailable_and_an_enabled_one_shot_rides_on_one_request() {
     let dir = temp_dir("one-shot");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
 
@@ -200,7 +200,7 @@ fn a_disabled_skill_is_unavailable_and_an_enabled_one_shot_rides_on_one_request(
 #[test]
 fn no_skills_in_play_leaves_the_system_prompt_untouched() {
     let dir = temp_dir("untouched");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
     let conv = chat_ready_conversation(&store);
 
@@ -209,7 +209,7 @@ fn no_skills_in_play_leaves_the_system_prompt_untouched() {
     let options = injected_prompt(&store, &skills, conv, None);
     assert_eq!(
         options.system_prompt.as_deref(),
-        Some(shaim_lib::commands::UI_DIRECTIVES_HINT),
+        Some(klepai_lib::commands::UI_DIRECTIVES_HINT),
         "no skills — only the UI hint rides along"
     );
 
@@ -220,7 +220,7 @@ fn no_skills_in_play_leaves_the_system_prompt_untouched() {
     let prompt = options.system_prompt.expect("prompt expected");
     assert!(
         prompt.starts_with("You are terse.\n\n---\n\n")
-            && prompt.ends_with(shaim_lib::commands::UI_DIRECTIVES_HINT),
+            && prompt.ends_with(klepai_lib::commands::UI_DIRECTIVES_HINT),
         "the user prompt passes through first, the hint trails: {prompt}"
     );
 }

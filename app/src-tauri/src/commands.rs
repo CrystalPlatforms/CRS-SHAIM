@@ -38,14 +38,14 @@ fn with_store<T>(
 
 // ---- Permissions (issue #28) ------------------------------------------------
 
-/// Teaches the assistant Shaim's UI directives (issue #22): fenced blocks
+/// Teaches the assistant Klepai's UI directives (issue #22): fenced blocks
 /// with these info strings render as rich elements instead of code. Rides on
 /// every request — natural chat, agent CLI prompts and the tool loop.
-pub const UI_DIRECTIVES_HINT: &str = "Shaim renders these fenced blocks as rich UI elements when you emit them in a reply:\n\
-- ```shaim-table with CSV (a header row, then data rows) — rendered as an interactive data table.\n\
-- ```shaim-todos with JSON {\"items\":[{\"label\":\"…\",\"status\":\"pending|active|done\"}]} — rendered as a live goal-progress panel while you work; re-emit it as your plan or progress changes.\n\
-- ```shaim-ts with a short label — rendered as a timestamp divider between sections.\n\
-Use them sparingly, only when they genuinely help. Long multi-step tasks benefit most from shaim-todos: keep it current so the user can follow what you are doing right now.";
+pub const UI_DIRECTIVES_HINT: &str = "Klepai renders these fenced blocks as rich UI elements when you emit them in a reply:\n\
+- ```klepai-table with CSV (a header row, then data rows) — rendered as an interactive data table.\n\
+- ```klepai-todos with JSON {\"items\":[{\"label\":\"…\",\"status\":\"pending|active|done\"}]} — rendered as a live goal-progress panel while you work; re-emit it as your plan or progress changes.\n\
+- ```klepai-ts with a short label — rendered as a timestamp divider between sections.\n\
+Use them sparingly, only when they genuinely help. Long multi-step tasks benefit most from klepai-todos: keep it current so the user can follow what you are doing right now.";
 
 /// Appends the UI-directives hint to an assembled prompt.
 fn with_ui_hint(mut prompt: String) -> String {
@@ -60,7 +60,7 @@ fn with_ui_hint(mut prompt: String) -> String {
 /// since CLI 2.1.306 defers most tools behind ToolSearch when many MCP
 /// servers are configured, weaker models read the preamble, find no
 /// Write/Bash in the index and conclude the tools are missing — the ask
-/// never even reaches Shaim's permission gate. Only Claude Code has
+/// never even reaches Klepai's permission gate. Only Claude Code has
 /// ToolSearch, so the hint rides on its prompts alone.
 pub const TOOLS_HINT: &str = "Your standard tools (Read, Write, Edit, Bash, Glob, Grep and the rest) are available right now — call them directly for file and shell work. ToolSearch only loads optional deferred extensions (MCP tools and similar); core tools are never in its index, so do not search for them there and never conclude a core tool is missing without trying it once.";
 
@@ -389,7 +389,7 @@ fn write_image_tempfiles(images: &[String]) -> Vec<PathBuf> {
         let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else {
             continue;
         };
-        let path = std::env::temp_dir().join(format!("shaim-attach-{index}.{extension}"));
+        let path = std::env::temp_dir().join(format!("klepai-attach-{index}.{extension}"));
         if std::fs::write(&path, bytes).is_ok() {
             paths.push(path);
         }
@@ -818,10 +818,10 @@ fn shorten_text(text: &str, max: usize) -> String {
     }
 }
 
-// ---- Shaim skill library ------------------------------------------------------
+// ---- Klepai skill library ------------------------------------------------------
 //
 // The SkillStore owns the library files; these are one-to-one adapters.
-// Scope: Shaim skills reach server-model conversations only — nothing here is
+// Scope: Klepai skills reach server-model conversations only — nothing here is
 // ever handed to Claude Code or Codex.
 
 #[tauri::command]
@@ -1361,7 +1361,7 @@ pub async fn send_agent_message(
                 if !skills_block.is_empty() {
                     prompt = crate::agent::prompt_with_skills(&prompt, &skills_block);
                 }
-                // The UI-directives hint teaches the CLI brain Shaim's
+                // The UI-directives hint teaches the CLI brain Klepai's
                 // renderable blocks (issue #22).
                 prompt = with_ui_hint(prompt);
                 // The tools hint keeps the Claude Code brain from talking
@@ -1577,7 +1577,7 @@ fn transcript_prompt(history: &[Message], content: &str) -> String {
 
 /// Agent mode with a server-model brain: a bounded tool loop. Each turn the
 /// model either answers (text → assistant message) or calls tools, which
-/// Shaim executes locally inside the project folder and feeds back.
+/// Klepai executes locally inside the project folder and feeds back.
 async fn run_tool_loop(
     state: &State<'_, AppState>,
     conversation_id: i64,

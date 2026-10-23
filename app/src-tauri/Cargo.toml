@@ -1,18 +1,18 @@
 [package]
-name = "shaim"
+name = "klepai"
 version = "0.0.1"
-description = "Shaim — self-hosted LLM manager"
+description = "Klepai — self-hosted LLM manager"
 edition = "2021"
 rust-version = "1.82"
 
 [lib]
-name = "shaim_lib"
+name = "klepai_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Capital-S binary so the macOS menu bar / Dock show "Shaim" in dev runs too
+# Capital-S binary so the macOS menu bar / Dock show "Klepai" in dev runs too
 # (the process name comes from the executable filename).
 [[bin]]
-name = "Shaim"
+name = "Klepai"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -33,6 +33,10 @@ tokio = { version = "1", features = ["rt", "time", "macros", "sync", "process", 
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.23.1"
 tauri-plugin-opener = "2.5.5"
+# In-app updates (issue #33): signed auto-update served from GitHub Releases,
+# plus the relaunch helper that restarts the app after an update is applied.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # .skill packages are zips of a skill folder; deflate covers what owners ship.
 zip = { version = "9", default-features = false, features = ["deflate"] }
 

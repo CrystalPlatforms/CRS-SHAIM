@@ -30,12 +30,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use shaim_lib::agent::{
+use klepai_lib::agent::{
     adapter_for, AgentAccess, AgentAdapter, AgentError, AgentEvent, AgentRunner, Segment,
     StdinHandle,
 };
-use shaim_lib::gateway::AbortFlag;
-use shaim_lib::store::AgentKind;
+use klepai_lib::gateway::AbortFlag;
+use klepai_lib::store::AgentKind;
 
 fn fixture_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
@@ -129,7 +129,7 @@ impl AgentAdapter for MissingAdapter {
     }
 
     fn binary(&self) -> &'static str {
-        "shaim-nonexistent-cli-for-tests"
+        "klepai-nonexistent-cli-for-tests"
     }
 
     fn install_hint(&self) -> &'static str {
@@ -316,7 +316,7 @@ async fn codex_fixture_parses_through_the_same_runner_path() {
 
 #[tokio::test]
 async fn stop_terminates_the_spawned_process() {
-    const MARKER: &str = "shaim-agent-kill-test";
+    const MARKER: &str = "klepai-agent-kill-test";
     let mut adapter = SleeperAdapter { marker: MARKER };
     let abort = AbortFlag::new();
 
@@ -403,16 +403,16 @@ impl AgentAdapter for PromptSpy {
 
 #[tokio::test]
 async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
-    use shaim_lib::skills::{prompt_block, SkillStore};
-    use shaim_lib::store::Store;
+    use klepai_lib::skills::{prompt_block, SkillStore};
+    use klepai_lib::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
-        "shaim-agent-skills-{}",
+        "klepai-agent-skills-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     // The composition send_agent_message performs: the enabled block (plus a
@@ -429,7 +429,7 @@ async fn enabled_skills_reach_the_agent_handoff_and_disabled_do_not() {
     skills.set_enabled(&store, disabled, false).expect("disable");
 
     let block = prompt_block(&skills.enabled_prompts(&store).expect("prompts"));
-    let prompt = shaim_lib::agent::prompt_with_skills("Fix the failing test.", &block);
+    let prompt = klepai_lib::agent::prompt_with_skills("Fix the failing test.", &block);
 
     let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let mut adapter = PromptSpy {
@@ -489,7 +489,7 @@ async fn missing_binary_returns_a_structured_error() {
             label,
             install_hint,
         } => {
-            assert_eq!(binary, "shaim-nonexistent-cli-for-tests");
+            assert_eq!(binary, "klepai-nonexistent-cli-for-tests");
             assert_eq!(*label, "Missing CLI");
             assert_eq!(*install_hint, "imagine install instructions here");
             // The message itself carries the guidance for the UI error box.
@@ -503,14 +503,14 @@ async fn missing_binary_returns_a_structured_error() {
 
 #[test]
 fn cli_model_detection_lists_real_models() {
-    let codex = shaim_lib::commands::list_cli_models("codex".into()).unwrap();
+    let codex = klepai_lib::commands::list_cli_models("codex".into()).unwrap();
     println!("codex models: {codex:?}");
     assert!(
         codex.contains(&"gpt-5.6-terra".to_string())
             && codex.contains(&"gpt-5.6-luna".to_string()),
         "session history models must be detected: {codex:?}"
     );
-    let claude = shaim_lib::commands::list_cli_models("claude_code".into()).unwrap();
+    let claude = klepai_lib::commands::list_cli_models("claude_code".into()).unwrap();
     println!("claude models: {claude:?}");
     assert!(claude.contains(&"default".to_string()));
 }
@@ -537,7 +537,7 @@ fn control_requests_parse_into_permission_events() {
         other => panic!("expected one PermissionRequest, got {other:?}"),
     }
 
-    // Other control subtypes (hooks etc.) are not Shaim's to answer.
+    // Other control subtypes (hooks etc.) are not Klepai's to answer.
     let other_control = r#"{"type":"control_request","request_id":"x","request":{"subtype":"hook_callback"}}"#;
     assert!(adapter.parse_line(other_control).is_empty());
     // Garbage never panics.
@@ -549,7 +549,7 @@ fn tools_hint_rides_only_on_claude_code_prompts() {
     // The 2.1.306 deferred-tools harness makes weaker models conclude the
     // core tools are missing (they are never in ToolSearch's index), so the
     // hint rides on every Claude Code prompt (issue #32 HITL regression).
-    use shaim_lib::commands::with_tools_hint;
+    use klepai_lib::commands::with_tools_hint;
     let base = String::from("create a.txt with hello");
     let claude = with_tools_hint(AgentKind::ClaudeCode, base.clone());
     assert!(claude.contains(&base), "prompt content survives");
@@ -564,15 +564,15 @@ fn tools_hint_rides_only_on_claude_code_prompts() {
 #[test]
 fn bash_ask_settings_force_every_command_through_the_ask() {
     // The CLI's built-in safe-list runs read-only commands (`git status`,
-    // `ls`, …) without asking, silently bypassing Shaim's gate. The spawn
+    // `ls`, …) without asking, silently bypassing Klepai's gate. The spawn
     // carries an `ask` rule so every Bash reaches the can_use_tool ask,
-    // where Shaim's own rules decide (issue #32 HITL regression).
-    use shaim_lib::agent::BASH_ASK_SETTINGS;
+    // where Klepai's own rules decide (issue #32 HITL regression).
+    use klepai_lib::agent::BASH_ASK_SETTINGS;
     let settings: serde_json::Value =
         serde_json::from_str(BASH_ASK_SETTINGS).expect("valid settings JSON");
     assert_eq!(
         settings["permissions"]["ask"],
         serde_json::json!(["Bash"]),
-        "every Bash command asks, Shaim's rules then auto-answer"
+        "every Bash command asks, Klepai's rules then auto-answer"
     );
 }

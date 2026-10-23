@@ -225,7 +225,7 @@ pub fn control_response_line(request_id: &str, allow: bool, input_json: &str) ->
     } else {
         serde_json::json!({
             "behavior": "deny",
-            "message": "The user denied this action in Shaim.",
+            "message": "The user denied this action in Klepai.",
         })
     };
     serde_json::json!({
@@ -241,9 +241,9 @@ pub fn control_response_line(request_id: &str, allow: bool, input_json: &str) ->
 
 /// Settings passed with `--settings` on interactive runs (issue #32 HITL):
 /// the CLI's built-in safe-list otherwise runs read-only commands (`git
-/// status`, `ls`, …) without asking, silently bypassing Shaim's gate. An
+/// status`, `ls`, …) without asking, silently bypassing Klepai's gate. An
 /// `ask` rule forces every Bash through the `can_use_tool` ask, where
-/// Shaim's own rules decide. Merged on top of the user's global settings —
+/// Klepai's own rules decide. Merged on top of the user's global settings —
 /// their env and providers keep applying.
 pub const BASH_ASK_SETTINGS: &str = r#"{"permissions":{"ask":["Bash"]}}"#;
 
@@ -675,7 +675,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
         match access {
             AgentAccess::Full => {
                 // Interactive permissions (issue #28): the CLI asks through
-                // `can_use_tool` control requests and Shaim answers on
+                // `can_use_tool` control requests and Klepai answers on
                 // stdin. `default` mode keeps every risky action (commands,
                 // edits, network) behind the ask; the prompt itself arrives
                 // as a stream-json user message (`initial_stdin`).
@@ -717,7 +717,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 }
             }
         }
-        command.env("CLAUDE_CODE_ENTRYPOINT", "shaim");
+        command.env("CLAUDE_CODE_ENTRYPOINT", "klepai");
         command
     }
 

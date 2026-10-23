@@ -1,8 +1,8 @@
 /** Parsers for the assistant-triggered UI directives (issue #22): fenced
- * blocks with the `shaim-*` info strings render as rich elements instead of
+ * blocks with the `klepai-*` info strings render as rich elements instead of
  * code. One parser per block, pure functions — the renderers stay dumb. */
 
-/** One goal-progress checklist row (shaim-todos / Claude's TodoWrite). */
+/** One goal-progress checklist row (klepai-todos / Claude's TodoWrite). */
 export interface TodoItem {
   label: string;
   status: "pending" | "active" | "done";
@@ -10,9 +10,9 @@ export interface TodoItem {
 
 const TODO_STATUSES: TodoItem["status"][] = ["pending", "active", "done"];
 
-/** Parses a `shaim-todos` body: JSON `{"items":[{"label","status"}]}`.
+/** Parses a `klepai-todos` body: JSON `{"items":[{"label","status"}]}`.
  * `null` when the payload is not a readable checklist. */
-export function parseShaimTodos(body: string): TodoItem[] | null {
+export function parseKlepaiTodos(body: string): TodoItem[] | null {
   try {
     const parsed = JSON.parse(body) as {
       items?: { label?: unknown; status?: unknown }[];
@@ -111,7 +111,7 @@ export function parseCsv(body: string): CsvRow[] {
 
 /** The goal-progress directive body: complete OR still streaming (an
  * unclosed fence at the end of the text). */
-const SHAIM_TODO_BLOCK = /```shaim-todos\s*\n([\s\S]*?)(?:```|$)/g;
+const KLEPAI_TODO_BLOCK = /```klepai-todos\s*\n([\s\S]*?)(?:```|$)/g;
 
 /** Reads every complete `{...}` object inside a (possibly partial) items
  * list — a half-streamed row simply isn't there yet. */
@@ -136,25 +136,25 @@ function parseLooseTodoRows(body: string): TodoItem[] | null {
 /** The assistant's latest goal-progress state from streamed text — works
  * while the block is STILL streaming (issue #22 feedback: the widget must
  * update during the task, not after it). The last block wins. */
-export function extractLastShaimTodos(text: string): TodoItem[] | null {
+export function extractLastKlepaiTodos(text: string): TodoItem[] | null {
   let last: TodoItem[] | null = null;
-  for (const match of text.matchAll(SHAIM_TODO_BLOCK)) {
+  for (const match of text.matchAll(KLEPAI_TODO_BLOCK)) {
     const items = parseLooseTodoRows(match[1]);
     if (items) last = items;
   }
   return last;
 }
 
-/** Removes shaim-todos blocks (complete or streaming) from display text —
+/** Removes klepai-todos blocks (complete or streaming) from display text —
  * the raw JSON never belongs in the visible stream; the widget shows it. */
-export function stripShaimTodoBlocks(text: string): string {
-  return text.replace(SHAIM_TODO_BLOCK, "");
+export function stripKlepaiTodoBlocks(text: string): string {
+  return text.replace(KLEPAI_TODO_BLOCK, "");
 }
 
 /** A markdown table already inside the reply is NOT a directive — only the
- * fenced `shaim-table` body is. This sanity check keeps empty/garbage CSV
+ * fenced `klepai-table` body is. This sanity check keeps empty/garbage CSV
  * from rendering as a broken table; `null` falls back to plain code. */
-export function parseShaimTable(body: string): {
+export function parseKlepaiTable(body: string): {
   header: CsvRow;
   rows: CsvRow[];
 } | null {

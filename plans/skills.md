@@ -1,4 +1,4 @@
-# Plan: Shaim Skills (Post-Alpha)
+# Plan: Klepai Skills (Post-Alpha)
 
 > Source PRD: issue #16 (annex to `PRD.md` / issue #1). Post-Alpha — every slice lands after the Alpha release (#15). Alpha scope is untouched.
 
@@ -11,7 +11,7 @@ Durable decisions that apply across all phases:
 - **Injection at boundaries only — server-model only (owner decision, 2026-10-16)**: enabled skills are appended to the system prompt during ModelGateway request assembly (Natural mode), with a total size cap (**32 KiB**) + warning. **Skills never reach Claude Code or Codex**: no native skills-directory handoff, no session-prompt injection into agent CLIs. The native agent-skills palette (the CLI's own installed skills, `list_agent_skills`) is a separate existing feature and stays untouched.
   > **SUPERSEDED (2026-10-17)** by PRD #16 stories 10 & 12 and issues #19/#20: enabled skills are handed to Agent-mode CLI sessions (session-prompt injection via `prompt_with_skills`), and the `/` palette works in both Natural and Agent composers. The 32 KiB cap and the untouched `list_agent_skills` palette still stand.
 - **Slash palette is composer-level, Natural conversations only**: `/` opens a palette of all imported skills (name + description, filter, arrows + Enter); selection attaches the skill's content to the next outgoing message as a one-shot, independent of the global toggle. The palette does not appear in Agent (Claude Code / Codex) conversations.
-- **No execution by Shaim**: skill scripts are only made available to agent CLIs inside their sessions.
+- **No execution by Klepai**: skill scripts are only made available to agent CLIs inside their sessions.
 - **Sequencing**: all phases depend on the Alpha stack (Store, ModelGateway, AgentRunner, composer) already existing — guaranteed by the #15 blocker at issue level.
 
 ---
@@ -74,7 +74,7 @@ Settings → Skills: the list (name, short description, kind badge), a global en
 
 ### What to build
 
-Enabled skills become active in Natural mode only: their content is appended to the system prompt during ModelGateway request assembly (respecting the 32 KiB cap + warning). **Agent mode is intentionally untouched** — Claude Code and Codex never receive Shaim skills (no native directory handoff, no prompt injection). Disabled skills never reach requests. Shaim itself never executes skill scripts.
+Enabled skills become active in Natural mode only: their content is appended to the system prompt during ModelGateway request assembly (respecting the 32 KiB cap + warning). **Agent mode is intentionally untouched** — Claude Code and Codex never receive Klepai skills (no native directory handoff, no prompt injection). Disabled skills never reach requests. Klepai itself never executes skill scripts.
 
 ### Assumptions carried in
 
@@ -88,7 +88,7 @@ Enabled skills become active in Natural mode only: their content is appended to 
 
 - [ ] Integration test: outgoing Natural request's system prompt contains enabled-skill content; a disabled skill is absent — [test]
 - [ ] Cap (32 KiB) respected in request assembly — [test]
-- [ ] Agent conversations carry no Shaim-skill content in the spawn handoff — [test]
+- [ ] Agent conversations carry no Klepai-skill content in the spawn handoff — [test]
 - [ ] HITL: a real server-model conversation sees an enabled skill — [HITL: owner-run session]
 
 ---

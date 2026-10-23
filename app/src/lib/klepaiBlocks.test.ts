@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  extractLastShaimTodos,
+  extractLastKlepaiTodos,
   parseCsv,
-  parseShaimTable,
-  parseShaimTodos,
+  parseKlepaiTable,
+  parseKlepaiTodos,
   parseTodoWrite,
-  stripShaimTodoBlocks,
-} from "./shaimBlocks";
+  stripKlepaiTodoBlocks,
+} from "./klepaiBlocks";
 
-describe("parseShaimTodos", () => {
+describe("parseKlepaiTodos", () => {
   it("reads a valid checklist", () => {
-    const items = parseShaimTodos(
+    const items = parseKlepaiTodos(
       `{"items":[{"label":"Set up the repo","status":"done"},{"label":"Write tests","status":"active"},{"label":"Ship","status":"pending"}]}`,
     );
     expect(items).toEqual([
@@ -22,15 +22,15 @@ describe("parseShaimTodos", () => {
   });
 
   it("defaults unknown statuses to pending", () => {
-    const items = parseShaimTodos(`{"items":[{"label":"One","status":"weird"}]}`);
+    const items = parseKlepaiTodos(`{"items":[{"label":"One","status":"weird"}]}`);
     expect(items).toEqual([{ label: "One", status: "pending" }]);
   });
 
   it("rejects malformed payloads so the block degrades to code", () => {
-    expect(parseShaimTodos("not json")).toBeNull();
-    expect(parseShaimTodos(`{"items":"nope"}`)).toBeNull();
-    expect(parseShaimTodos(`{"items":[{"label":""}]}`)).toBeNull();
-    expect(parseShaimTodos(`{"items":[]}`)).toBeNull();
+    expect(parseKlepaiTodos("not json")).toBeNull();
+    expect(parseKlepaiTodos(`{"items":"nope"}`)).toBeNull();
+    expect(parseKlepaiTodos(`{"items":[{"label":""}]}`)).toBeNull();
+    expect(parseKlepaiTodos(`{"items":[]}`)).toBeNull();
   });
 });
 
@@ -77,19 +77,19 @@ describe("parseCsv", () => {
   });
 });
 
-describe("extractLastShaimTodos", () => {
+describe("extractLastKlepaiTodos", () => {
   it("returns the newest complete todos block", () => {
     const text = [
       "Starting.",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"A","status":"done"},{"label":"B","status":"active"},{"label":"C","status":"pending"},{"label":"D","status":"pending"}]}`,
       "```",
       "Progress update:",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"A","status":"done"},{"label":"B","status":"done"},{"label":"C","status":"active"},{"label":"D","status":"pending"}]}`,
       "```",
     ].join("\n");
-    expect(extractLastShaimTodos(text)).toEqual([
+    expect(extractLastKlepaiTodos(text)).toEqual([
       { label: "A", status: "done" },
       { label: "B", status: "done" },
       { label: "C", status: "active" },
@@ -99,30 +99,30 @@ describe("extractLastShaimTodos", () => {
 
   it("reads complete rows from an unclosed block, skipping the torn row", () => {
     const text = [
-      "```shaim-table",
+      "```klepai-table",
       "a,b",
       "1,2",
       "```",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"One","status":"pending"},{"label":"Tw`,
     ].join("\n");
-    expect(extractLastShaimTodos(text)).toEqual([
+    expect(extractLastKlepaiTodos(text)).toEqual([
       { label: "One", status: "pending" },
     ]);
   });
 
-  it("returns null when no shaim-todos block exists", () => {
-    expect(extractLastShaimTodos("plain text ```rust\ncode\n```")).toBeNull();
+  it("returns null when no klepai-todos block exists", () => {
+    expect(extractLastKlepaiTodos("plain text ```rust\ncode\n```")).toBeNull();
   });
 
   it("reads a STILL-STREAMING unclosed block so the widget updates mid-task", () => {
     const text = [
       "Plan looks like this:",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"Step one","status":"done"},{"label":"Step two","status":"active"},{"label":"Thr`,
       // fence never closed — the model is mid-JSON
     ].join("\n");
-    expect(extractLastShaimTodos(text)).toEqual([
+    expect(extractLastKlepaiTodos(text)).toEqual([
       { label: "Step one", status: "done" },
       { label: "Step two", status: "active" },
     ]);
@@ -130,42 +130,42 @@ describe("extractLastShaimTodos", () => {
 
   it("prefers the newest block even when an older one is closed", () => {
     const text = [
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"Old","status":"pending"}]}`,
       "```",
       "Progress:",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"Old","status":"done"}]}`,
     ].join("\n");
-    expect(extractLastShaimTodos(text)).toEqual([
+    expect(extractLastKlepaiTodos(text)).toEqual([
       { label: "Old", status: "done" },
     ]);
   });
 });
 
-describe("stripShaimTodoBlocks", () => {
+describe("stripKlepaiTodoBlocks", () => {
   it("removes complete and streaming todos blocks from display text", () => {
     const text = [
       "before",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"A","status":"done"}]}`,
       "```",
       "middle",
-      "```shaim-todos",
+      "```klepai-todos",
       `{"items":[{"label":"B"`,
     ].join("\n");
-    expect(stripShaimTodoBlocks(text)).toBe("before\n\nmiddle\n");
+    expect(stripKlepaiTodoBlocks(text)).toBe("before\n\nmiddle\n");
   });
 
   it("leaves ordinary fenced code untouched", () => {
     const text = "```rust\nfn main() {}\n```";
-    expect(stripShaimTodoBlocks(text)).toBe(text);
+    expect(stripKlepaiTodoBlocks(text)).toBe(text);
   });
 });
 
-describe("parseShaimTable", () => {
+describe("parseKlepaiTable", () => {
   it("splits the header row from the data rows", () => {
-    const table = parseShaimTable("name,score\nAda,99\nBo,70");
+    const table = parseKlepaiTable("name,score\nAda,99\nBo,70");
     expect(table).toEqual({
       header: ["name", "score"],
       rows: [
@@ -176,8 +176,8 @@ describe("parseShaimTable", () => {
   });
 
   it("needs at least a header and one data row", () => {
-    expect(parseShaimTable("a,b")).toBeNull();
-    expect(parseShaimTable("")).toBeNull();
-    expect(parseShaimTable(",\n1,2")).toBeNull();
+    expect(parseKlepaiTable("a,b")).toBeNull();
+    expect(parseKlepaiTable("")).toBeNull();
+    expect(parseKlepaiTable(",\n1,2")).toBeNull();
   });
 });

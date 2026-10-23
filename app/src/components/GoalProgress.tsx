@@ -1,6 +1,6 @@
 import { Circle, CircleCheck, CircleDotDashed } from "lucide-react";
 
-import type { TodoItem } from "@/lib/shaimBlocks";
+import type { TodoItem } from "@/lib/klepaiBlocks";
 import { cn } from "@/lib/utils";
 
 /** Rows the pinned widget shows before the "+N …" counts take over. */
@@ -8,8 +8,8 @@ const WIDGET_MAX_ROWS = 3;
 
 /**
  * Goal progress (issue #22): the assistant's to-do list for long tasks.
- * Rendered from a `shaim-todos` directive or Claude's native TodoWrite tool
- * input — the assistant triggers it, Shaim only draws it.
+ * Rendered from a `klepai-todos` directive or Claude's native TodoWrite tool
+ * input — the assistant triggers it, Klepai only draws it.
  */
 export function GoalProgress({ items }: { items: TodoItem[] }) {
   const done = items.filter((item) => item.status === "done").length;

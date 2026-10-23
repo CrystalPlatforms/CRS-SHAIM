@@ -3,7 +3,7 @@
 //! Assumptions these tests encode:
 //! - A `.skill` file is a zip of a skill folder; `SKILL.md` may sit at the
 //!   archive root or inside one top-level folder. Side files are copied
-//!   as-is — Shaim never executes them, it only stores them.
+//!   as-is — Klepai never executes them, it only stores them.
 //! - Name/description come from YAML frontmatter (`name`, `description`
 //!   keys), falling back to the file/folder name + first body paragraph
 //!   (capped at 200 chars).
@@ -21,14 +21,14 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use shaim_lib::skills::SkillStore;
-use shaim_lib::store::Store;
+use klepai_lib::skills::SkillStore;
+use klepai_lib::store::Store;
 
 /// Unique per-test temp dir; cleared before the run so leftovers never
 /// interfere.
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "shaim-skills-tests-{}-{}",
+        "klepai-skills-tests-{}-{}",
         std::process::id(),
         name
     ));
@@ -52,7 +52,7 @@ fn write_zip(path: &Path, entries: &[(&str, &str)]) {
 #[test]
 fn a_markdown_skill_without_frontmatter_falls_back_to_filename_and_first_paragraph() {
     let dir = temp_dir("markdown-fallback");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let source = dir.join("greeting.md");
@@ -73,7 +73,7 @@ fn a_markdown_skill_without_frontmatter_falls_back_to_filename_and_first_paragra
 #[test]
 fn an_overlong_first_paragraph_is_truncated_at_a_word_boundary() {
     let dir = temp_dir("markdown-cap");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let long_words = "word ".repeat(60); // 300 chars, no risk of a lucky fit
@@ -89,7 +89,7 @@ fn an_overlong_first_paragraph_is_truncated_at_a_word_boundary() {
 #[test]
 fn a_zip_without_skill_md_fails_with_a_clear_error() {
     let dir = temp_dir("no-skill-md");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let package = dir.join("broken.skill");
@@ -112,7 +112,7 @@ fn a_zip_without_skill_md_fails_with_a_clear_error() {
 #[test]
 fn a_package_wrapped_in_a_folder_is_found_one_level_deep() {
     let dir = temp_dir("wrapped-package");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let package = dir.join("wrapped.skill");
@@ -152,13 +152,13 @@ fn library_files_and_metadata_survive_a_simulated_restart() {
 
     // First launch: import, then drop everything the way app shutdown would.
     {
-        let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+        let store = Store::open(&dir.join("klepai.db")).expect("store should open");
         let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
         skills.import(&store, &package).expect("import should succeed");
     }
 
     // Second launch: the row and the files are still there.
-    let store = Store::open(&dir.join("shaim.db")).expect("reopen should succeed");
+    let store = Store::open(&dir.join("klepai.db")).expect("reopen should succeed");
     let rows = store.list_skills().expect("list should succeed");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Cooler Master");
@@ -170,7 +170,7 @@ fn library_files_and_metadata_survive_a_simulated_restart() {
 #[test]
 fn toggling_enabled_flips_the_store_and_survives_restart() {
     let dir = temp_dir("toggle-restart");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let source = dir.join("release-checklist.md");
@@ -184,7 +184,7 @@ fn toggling_enabled_flips_the_store_and_survives_restart() {
 
     // Restart: the enabled flag is a persisted property, not UI state.
     drop(store);
-    let store = Store::open(&dir.join("shaim.db")).expect("reopen should succeed");
+    let store = Store::open(&dir.join("klepai.db")).expect("reopen should succeed");
     let rows = store.list_skills().expect("list should succeed");
     assert!(rows[0].enabled, "enabled flag survives a restart");
 }
@@ -192,7 +192,7 @@ fn toggling_enabled_flips_the_store_and_survives_restart() {
 #[test]
 fn editing_saves_the_body_and_preserves_frontmatter() {
     let dir = temp_dir("edit-body");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let source = dir.join("release-checklist.md");
@@ -224,7 +224,7 @@ fn editing_saves_the_body_and_preserves_frontmatter() {
 #[test]
 fn delete_removes_metadata_and_library_files() {
     let dir = temp_dir("delete");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     // One package (a folder) and one markdown skill (a file).
@@ -249,7 +249,7 @@ fn delete_removes_metadata_and_library_files() {
 #[test]
 fn enabled_size_accounts_only_for_enabled_skills() {
     let dir = temp_dir("size-accounting");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let first = dir.join("first.md");
@@ -278,13 +278,13 @@ fn enabled_size_accounts_only_for_enabled_skills() {
     );
 
     // The cap constant is the owner's chosen budget: 32 KiB.
-    assert_eq!(shaim_lib::skills::SIZE_CAP_BYTES, 32 * 1024);
+    assert_eq!(klepai_lib::skills::SIZE_CAP_BYTES, 32 * 1024);
 }
 
 #[test]
 fn editing_a_package_skill_reads_and_writes_its_skill_md() {
     let dir = temp_dir("edit-package");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let package = dir.join("cooler-master.skill");
@@ -315,7 +315,7 @@ fn editing_a_package_skill_reads_and_writes_its_skill_md() {
 #[test]
 fn renaming_updates_the_file_frontmatter_and_the_store_row() {
     let dir = temp_dir("rename");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let package = dir.join("cooler-master.skill");
@@ -357,20 +357,20 @@ fn renaming_updates_the_file_frontmatter_and_the_store_row() {
 #[test]
 fn importing_a_markdown_skill_parses_frontmatter_metadata() {
     let dir = temp_dir("markdown-frontmatter");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let source = dir.join("release-checklist.md");
     std::fs::write(
         &source,
-        "---\nname: Release checklist\ndescription: Steps before tagging a Shaim release\n---\n\n1. Bump the version.\n2. Run the suite.\n",
+        "---\nname: Release checklist\ndescription: Steps before tagging a Klepai release\n---\n\n1. Bump the version.\n2. Run the suite.\n",
     )
     .expect("fixture should write");
 
     let skill = skills.import(&store, &source).expect("import should succeed");
 
     assert_eq!(skill.name, "Release checklist");
-    assert_eq!(skill.description, "Steps before tagging a Shaim release");
+    assert_eq!(skill.description, "Steps before tagging a Klepai release");
     assert_eq!(skill.kind, "markdown");
     assert!(!skill.enabled);
 
@@ -383,7 +383,7 @@ fn importing_a_markdown_skill_parses_frontmatter_metadata() {
 #[test]
 fn importing_a_skill_package_creates_library_folder_and_metadata_row() {
     let dir = temp_dir("tracer-package");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let skills = SkillStore::open(&dir.join("skills")).expect("library should open");
 
     let package = dir.join("cooler-master.skill");

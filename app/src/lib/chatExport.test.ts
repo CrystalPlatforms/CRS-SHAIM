@@ -23,7 +23,7 @@ const conversation = (messages: Message[]) => messages;
 
 const TINY = conversation([
   base({ id: 1, role: "user", content: "Cześć, jak masz na imię?" }),
-  base({ id: 2, role: "assistant", content: "Nazywam się **Shaim**." }),
+  base({ id: 2, role: "assistant", content: "Nazywam się **Klepai**." }),
 ]);
 
 describe("buildExportFile", () => {
@@ -51,7 +51,7 @@ describe("buildExportFile", () => {
     expect(md).toContain("**You**");
     expect(md).toContain("Cześć, jak masz na imię?");
     expect(md).toContain("**Assistant**");
-    expect(md).toContain("Exported from Shaim");
+    expect(md).toContain("Exported from Klepai");
   });
 
   it("renders plain text with bracketed speakers", () => {
@@ -60,7 +60,7 @@ describe("buildExportFile", () => {
     );
     expect(txt).toContain("[You]");
     expect(txt).toContain("[Assistant]");
-    expect(txt).toContain("Nazywam się **Shaim**.");
+    expect(txt).toContain("Nazywam się **Klepai**.");
   });
 
   it("writes a valid RTF header and escapes braces", () => {

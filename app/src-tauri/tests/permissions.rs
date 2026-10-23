@@ -25,19 +25,19 @@
 
 use std::path::Path;
 
-use shaim_lib::agent::{control_response_line, permission_target};
-use shaim_lib::commands::{auto_allowed, rule_matches, rule_pattern_for};
-use shaim_lib::store::{AllowedKind, Store};
+use klepai_lib::agent::{control_response_line, permission_target};
+use klepai_lib::commands::{auto_allowed, rule_matches, rule_pattern_for};
+use klepai_lib::store::{AllowedKind, Store};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("shaim-perm-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("klepai-perm-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir should create");
     dir
 }
 
-fn rule(kind: AllowedKind, pattern: &str) -> shaim_lib::store::AllowedRule {
-    shaim_lib::store::AllowedRule {
+fn rule(kind: AllowedKind, pattern: &str) -> klepai_lib::store::AllowedRule {
+    klepai_lib::store::AllowedRule {
         id: 0,
         conversation_id: None,
         kind: kind.as_str().to_string(),
@@ -163,7 +163,7 @@ fn control_response_line_carries_the_wire_shape() {
 #[test]
 fn rules_scope_globally_per_conversation_and_cascade() {
     let dir = temp_dir("scope");
-    let store = Store::open(&dir.join("shaim.db")).expect("store should open");
+    let store = Store::open(&dir.join("klepai.db")).expect("store should open");
     let conv = store.create_conversation(None).expect("create").id;
     let other = store.create_conversation(None).expect("create").id;
 

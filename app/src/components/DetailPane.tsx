@@ -183,9 +183,9 @@ export function DetailPane({
   // window event keeps the Server dropdown current without a reopen.
   useEffect(() => {
     const onServersChanged = () => void loadServers();
-    window.addEventListener("shaim:servers-changed", onServersChanged);
+    window.addEventListener("klepai:servers-changed", onServersChanged);
     return () =>
-      window.removeEventListener("shaim:servers-changed", onServersChanged);
+      window.removeEventListener("klepai:servers-changed", onServersChanged);
   }, [loadServers]);
 
   // Fetch the model list for whichever server is in play. Re-runs when the

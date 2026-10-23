@@ -1,6 +1,6 @@
-# Plan: Shaim Alpha v.0.0.1
+# Plan: Klepai Alpha v.0.0.1
 
-> Source PRD: `PRD.md` in this repository (Shaim by CrystalPlatforms — private Self-Hosted LLM Manager). Every phase traces to numbered user stories in that PRD.
+> Source PRD: `PRD.md` in this repository (Klepai by CrystalPlatforms — private Self-Hosted LLM Manager). Every phase traces to numbered user stories in that PRD.
 
 ## Architectural decisions
 
@@ -15,8 +15,8 @@ Durable decisions that apply across all phases:
 - **Modes as configuration**: mode is an enum on the conversation (`Natural | Agent`, extensible post-Alpha with Brainstorm/Unrestricted). Natural routes through ModelGateway; Agent routes through AgentRunner. Not separate code paths.
 - **Fork semantics**: "Fork from this" copies the selected message and everything after it into a new conversation; nothing before is cloned; original untouched. Regenerate replaces the last assistant message (no variant tree).
 - **Security posture**: LAN-only, single user, no accounts/login/telemetry/cloud sync. Outbound network limited to user-configured model servers and spawned agent CLIs.
-- **Design source**: CRS-Theme CSS variables from the tweakcn export (primary `#2bc585`, dark-first); Shaim logo/icon assets from `assets/`.
-- **Landing**: one static `index.html` (inline CSS, no build step) deployed to Cloudflare Pages at `shaim.pages.dev`.
+- **Design source**: CRS-Theme CSS variables from the tweakcn export (primary `#2bc585`, dark-first); Klepai logo/icon assets from `assets/`.
+- **Landing**: one static `index.html` (inline CSS, no build step) deployed to Cloudflare Pages at `klepai.pages.dev`.
 - **Provenance**: zero code from the predecessor codebase (Inline); this repo starts from the PRD alone.
 
 ---
@@ -27,11 +27,11 @@ Durable decisions that apply across all phases:
 
 ### What to build
 
-A single static `index.html`: hero "Shaim — self-hosted LLM manager", feature list (connect Ollama & any OpenAI-compatible server; rich chat with code blocks and thinking; agents in chat — Alpha), footer "by CrystalPlatforms". Styled with CRS-Theme variables (dark, primary `#2bc585`) and the Shaim logo from `assets/`. Inline CSS, no build step, no backend; deployed to Cloudflare Pages as `shaim.pages.dev`.
+A single static `index.html`: hero "Klepai — self-hosted LLM manager", feature list (connect Ollama & any OpenAI-compatible server; rich chat with code blocks and thinking; agents in chat — Alpha), footer "by CrystalPlatforms". Styled with CRS-Theme variables (dark, primary `#2bc585`) and the Klepai logo from `assets/`. Inline CSS, no build step, no backend; deployed to Cloudflare Pages as `klepai.pages.dev`.
 
 ### Assumptions carried in
 
-- `shaim.pages.dev` subdomain is available at deploy time; Cloudflare Pages free tier.
+- `klepai.pages.dev` subdomain is available at deploy time; Cloudflare Pages free tier.
 - Assets in `assets/` are the final brand files.
 
 ### Out of scope for this phase
@@ -41,7 +41,7 @@ A single static `index.html`: hero "Shaim — self-hosted LLM manager", feature 
 
 ### Acceptance criteria
 
-- [ ] Deployed page loads in < 2 s on broadband with zero console errors — [observable: open `shaim.pages.dev`, check DevTools console + network timing]
+- [ ] Deployed page loads in < 2 s on broadband with zero console errors — [observable: open `klepai.pages.dev`, check DevTools console + network timing]
 - [ ] Hero, feature list, footer copy match the PRD; CRS-Theme colors and logo visible — [observable: visual check against PRD copy]
 - [ ] Site is one static HTML file with no build artifacts — [observable: view-source]
 
@@ -53,7 +53,7 @@ A single static `index.html`: hero "Shaim — self-hosted LLM manager", feature 
 
 ### What to build
 
-Tauri v2 project with React/TS + shadcn/ui. Window titled "Shaim", dark CRS-Theme applied via CSS variables from the tweakcn export, app icon generated from `assets/` for all platforms. Three-pane shell (sidebar / chat / detail) as static placeholders. Rust core initializes the Store: SQLite file created in the OS app-data directory with the schema for servers, conversations, messages, settings (FTS5 available). Nothing talks to the network yet.
+Tauri v2 project with React/TS + shadcn/ui. Window titled "Klepai", dark CRS-Theme applied via CSS variables from the tweakcn export, app icon generated from `assets/` for all platforms. Three-pane shell (sidebar / chat / detail) as static placeholders. Rust core initializes the Store: SQLite file created in the OS app-data directory with the schema for servers, conversations, messages, settings (FTS5 available). Nothing talks to the network yet.
 
 ### Assumptions carried in
 
@@ -67,9 +67,9 @@ Tauri v2 project with React/TS + shadcn/ui. Window titled "Shaim", dark CRS-Them
 
 ### Acceptance criteria
 
-- [ ] App builds and launches on macOS with title "Shaim" — [command: `tauri dev` / `tauri build` exits 0]
+- [ ] App builds and launches on macOS with title "Klepai" — [command: `tauri dev` / `tauri build` exits 0]
 - [ ] SQLite file exists in app-data dir containing the four entity tables after first launch — [observable: inspect DB file]
-- [ ] Dark CRS-Theme (green primary) and Shaim icon visible — [observable: visual check]
+- [ ] Dark CRS-Theme (green primary) and Klepai icon visible — [observable: visual check]
 
 ---
 
@@ -252,12 +252,12 @@ Mode selector at the composer — **Natural** (default) and **Agent** (enum desi
 
 ### Assumptions carried in
 
-- Claude Code CLI installed on the machine running Shaim; headless flags verified against the installed version (adapter isolated for drift).
+- Claude Code CLI installed on the machine running Klepai; headless flags verified against the installed version (adapter isolated for drift).
 - ModelGateway untouched — agents run through AgentRunner, not the model servers.
 
 ### Out of scope for this phase
 
-- Codex adapter (Phase 11); running agents on OSS models via a Shaim proxy (post-Alpha).
+- Codex adapter (Phase 11); running agents on OSS models via a Klepai proxy (post-Alpha).
 
 ### Acceptance criteria
 
@@ -273,7 +273,7 @@ Mode selector at the composer — **Natural** (default) and **Agent** (enum desi
 
 ### What to build
 
-Codex adapter on the same AgentRunner trait — proof the engine is extensible. When a chosen CLI binary is missing, Shaim shows a clear message with install guidance instead of a cryptic failure — for both agents.
+Codex adapter on the same AgentRunner trait — proof the engine is extensible. When a chosen CLI binary is missing, Klepai shows a clear message with install guidance instead of a cryptic failure — for both agents.
 
 ### Assumptions carried in
 
@@ -297,7 +297,7 @@ Codex adapter on the same AgentRunner trait — proof the engine is extensible. 
 
 ### What to build
 
-Final pass so the product reads as Shaim everywhere: About section "Shaim Alpha v.0.0.1" + "CrystalPlatforms"; window title and app icons finalized from `assets/` on all platform targets; sweep every UI string and identifier — zero references to the predecessor product.
+Final pass so the product reads as Klepai everywhere: About section "Klepai Alpha v.0.0.1" + "CrystalPlatforms"; window title and app icons finalized from `assets/` on all platform targets; sweep every UI string and identifier — zero references to the predecessor product.
 
 ### Assumptions carried in
 
@@ -310,7 +310,7 @@ Final pass so the product reads as Shaim everywhere: About section "Shaim Alpha 
 ### Acceptance criteria
 
 - [ ] `grep -ri inline` over the repo (excluding third-party lockfiles/dependencies) returns no predecessor references — [command]
-- [ ] About shows "Shaim Alpha v.0.0.1 / CrystalPlatforms"; correct icon on all platform targets — [observable]
+- [ ] About shows "Klepai Alpha v.0.0.1 / CrystalPlatforms"; correct icon on all platform targets — [observable]
 
 ---
 
@@ -339,7 +339,7 @@ Settings screen complete (servers, defaults, about). Network audit: with servers
 
 ---
 
-## Phase 14: Release — Shaim Alpha v.0.0.1
+## Phase 14: Release — Klepai Alpha v.0.0.1
 
 **User stories**: close-out of all 39 (full PRD Validation Strategy sweep)
 
@@ -353,7 +353,7 @@ Run the complete PRD validation sweep: full Rust test suite (mock servers, fork,
 
 ### Out of scope for this phase
 
-- Post-Alpha items (Brainstorm, Unrestricted, Shaim-as-brain proxy, variant navigation) — see PRD Out of Scope.
+- Post-Alpha items (Brainstorm, Unrestricted, Klepai-as-brain proxy, variant navigation) — see PRD Out of Scope.
 
 ### Acceptance criteria
 

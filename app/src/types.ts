@@ -178,7 +178,7 @@ export interface AllowedRule {
   created_at: number;
 }
 
-/** One skill in Shaim's own library, as shown in Settings → Skills. Enabled
+/** One skill in Klepai's own library, as shown in Settings → Skills. Enabled
  * skills ride in request assembly; any skill can be invoked one-shot from
  * the composer's "/" palette. */
 export interface StoredSkill {

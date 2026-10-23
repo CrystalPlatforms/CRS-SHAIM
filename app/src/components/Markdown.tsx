@@ -6,7 +6,7 @@ import rehypeHighlight from "rehype-highlight";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { cn } from "@/lib/utils";
-import { parseShaimTable } from "@/lib/shaimBlocks";
+import { parseKlepaiTable } from "@/lib/klepaiBlocks";
 import { DataTable } from "@/components/DataTable";
 
 /**
@@ -46,7 +46,7 @@ export function MarkdownMessage({ content }: { content: string }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          pre: ShaimDirectiveOrCode,
+          pre: KlepaiDirectiveOrCode,
           a: ExternalLink,
         }}
       >
@@ -82,28 +82,28 @@ function codeInfo(children: React.ReactNode): { language: string; body: string }
 }
 
 /** The assistant's UI directives (issue #22): fenced blocks with the
- * `shaim-*` info strings render as rich elements; everything else stays a
+ * `klepai-*` info strings render as rich elements; everything else stays a
  * regular code block. Malformed directive bodies degrade back to code. */
-function ShaimDirectiveOrCode({ children }: { children?: React.ReactNode }) {
+function KlepaiDirectiveOrCode({ children }: { children?: React.ReactNode }) {
   const { language, body } = codeInfo(children);
   switch (language) {
-    case "shaim-table": {
-      const table = parseShaimTable(body);
+    case "klepai-table": {
+      const table = parseKlepaiTable(body);
       return table ? <DataTable header={table.header} rows={table.rows} /> : <CodeBlock>{children}</CodeBlock>;
     }
-    case "shaim-todos":
+    case "klepai-todos":
       // Goal progress lives ONLY in the pinned widget above the composer —
       // blocks in the thread would stack one per update (issue #22
       // feedback). The widget reads these blocks live from the stream.
       return null;
-    case "shaim-ts":
+    case "klepai-ts":
       return body.length > 0 ? <TimestampDivider label={body} /> : <CodeBlock>{children}</CodeBlock>;
     default:
       return <CodeBlock>{children}</CodeBlock>;
   }
 }
 
-/** A timestamp divider the assistant placed with `shaim-ts`. */
+/** A timestamp divider the assistant placed with `klepai-ts`. */
 function TimestampDivider({ label }: { label: string }) {
   return (
     <div className="my-3 flex items-center gap-2" role="separator">

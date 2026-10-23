@@ -1,11 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileText, Info, Loader2, Pencil, PlugZap, Plus, RefreshCw, Terminal, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { ModePill } from "@/components/ChatPane";
 
 import type { AllowedRule, AppSettings, ModelInfo, Server, ServerKind, StoredSkill } from "@/types";
 import { enabledTotalSize, formatBytes, isOverCap, SKILL_SIZE_CAP_BYTES } from "@/lib/skillsCap";
+import {
+  defaultUpdaterApi,
+  downloadProgressText,
+  runCheck,
+  runInstall,
+  UpdateFlowError,
+  type UpdateResource,
+  type UpdateState,
+} from "@/lib/updater";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -126,7 +136,7 @@ function ServersTab({
   // own server list (DetailPane) learn about changes through this event.
   const notifyServersChanged = useCallback(() => {
     onServersChanged();
-    window.dispatchEvent(new Event("shaim:servers-changed"));
+    window.dispatchEvent(new Event("klepai:servers-changed"));
   }, [onServersChanged]);
 
   const loadServers = useCallback(async () => {
@@ -630,7 +640,7 @@ function SkillsTab({ open }: { open: boolean }) {
       setSkills(await invoke<StoredSkill[]>("list_skills"));
       // The composer's "/" palette mirrors this library — tell it to reload
       // (the event fires after every mutation path, all of which reload).
-      window.dispatchEvent(new Event("shaim:skills-changed"));
+      window.dispatchEvent(new Event("klepai:skills-changed"));
     } catch (error) {
       console.error("Failed to load skills:", error);
     }
@@ -1117,12 +1127,143 @@ function DefaultsTab({ open }: { open: boolean }) {
 
 // ---- About tab -------------------------------------------------------------
 
+// UpdatesStatus — the one-line readout under the Check button, one branch per
+// UpdateState kind. Error states (including the quiet "not-configured" and
+// "no-release" outcomes) render their canonical sentence from updater.ts.
+function UpdatesStatus({ state, appVersion }: { state: UpdateState; appVersion: string | null }) {
+  switch (state.kind) {
+    case "idle":
+      return null;
+    case "checking":
+      return <p className="text-xs text-muted-foreground">Checking for updates…</p>;
+    case "up-to-date":
+      return (
+        <p className="text-xs text-muted-foreground">
+          Klepai is up to date{appVersion != null ? ` (${appVersion})` : ""}.
+        </p>
+      );
+    case "no-release":
+      return (
+        <p className="text-xs text-muted-foreground">
+          No update information published yet — new releases appear here once they
+          ship an update file.
+        </p>
+      );
+    case "available":
+      return (
+        <p className="text-xs text-foreground">
+          Klepai {state.version} is available
+          {appVersion != null ? ` (installed: ${appVersion})` : ""}.
+        </p>
+      );
+    case "downloading":
+      return (
+        <p className="text-xs text-muted-foreground">
+          Downloading update — {downloadProgressText(state.received, state.total)}
+        </p>
+      );
+    case "error":
+      return <p className="text-xs text-destructive">{state.message}</p>;
+  }
+}
+
 function AboutTab() {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updates, setUpdates] = useState<UpdateState>({ kind: "idle" });
+  // The plugin Update handle for an "available" update — kept in a ref so the
+  // render loop never depends on it; only the state machine drives the UI.
+  const updateRef = useRef<UpdateResource | null>(null);
+
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
+
+  const checkForUpdates = useCallback(async () => {
+    setUpdates({ kind: "checking" });
+    try {
+      const result = await runCheck(defaultUpdaterApi);
+      updateRef.current = result.update;
+      setUpdates(result.state);
+    } catch (err) {
+      setUpdates(
+        err instanceof UpdateFlowError
+          ? err.state
+          : {
+              kind: "error",
+              errorKind: "unknown",
+              message: `Update check failed: ${String(err)}`,
+            },
+      );
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    const update = updateRef.current;
+    if (update == null) return;
+    try {
+      await runInstall(defaultUpdaterApi, update, (received, total) =>
+        setUpdates({ kind: "downloading", received, total }),
+      );
+      // Applied — the relaunch below ends this process; keep the last state
+      // in case relaunch is blocked (e.g. another install already ran).
+      defaultUpdaterApi.relaunch();
+    } catch (err) {
+      setUpdates(
+        err instanceof UpdateFlowError
+          ? err.state
+          : {
+              kind: "error",
+              errorKind: "unknown",
+              message: `Update install failed: ${String(err)}`,
+            },
+      );
+    }
+  }, []);
+
+  const busy = updates.kind === "checking" || updates.kind === "downloading";
+
   return (
     <div className="flex flex-col items-center gap-1 py-6 text-center">
-      <h3 className="font-display text-4xl">Shaim</h3>
-      <p className="text-sm text-foreground">Shaim Alpha v.0.0.1</p>
+      <img
+        src="/klepai-logo.png"
+        alt="Klepai logo"
+        width={72}
+        height={72}
+        className="mb-2 rounded-xl"
+      />
+      <h3 className="font-display text-4xl">Klepai</h3>
+      <p className="text-sm text-foreground">
+        Klepai Alpha{appVersion != null ? ` v.${appVersion}` : ""}
+      </p>
       <p className="text-xs text-muted-foreground">CrystalPlatforms</p>
+
+      {/* App updates (issue #33): check on demand + one-click install. The
+          busy states (checking/downloading) disable both buttons so two
+          updates can never race. */}
+      <div className="mt-4 flex items-center gap-2">
+        {updates.kind === "available" && (
+          <Button size="sm" data-testid="update-install" onClick={() => void installUpdate()}>
+            Download &amp; restart
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          data-testid="update-check"
+          disabled={busy}
+          onClick={() => void checkForUpdates()}
+        >
+          {updates.kind === "checking" && (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+          )}
+          Check for updates
+        </Button>
+      </div>
+      <div className="mt-1 max-w-sm">
+        <UpdatesStatus state={updates} appVersion={appVersion} />
+      </div>
     </div>
   );
 }

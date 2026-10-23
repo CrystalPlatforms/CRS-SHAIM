@@ -5,9 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Shaim is a private, self-hosted LLM manager — a desktop chat app that connects to your own model servers over the LAN. No accounts, no telemetry."
+      content="Klepai is a private, self-hosted LLM manager — a desktop chat app that connects to your own model servers over the LAN. Ollama first-class, agents in chat, local SQLite. No accounts, no telemetry."
     />
-    <title>Shaim — self-hosted LLM manager</title>
+    <title>Klepai — self-hosted LLM manager</title>
+    <link rel="icon" type="image/png" href="assets/transparent/klepai-icon-trans.png" />
+    <!-- Link-preview cards (X, Discord, LinkedIn, Slack) render these. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Klepai" />
+    <meta property="og:title" content="Klepai — self-hosted LLM manager" />
+    <meta
+      property="og:description"
+      content="A private desktop chat app for your own models: Ollama first-class, any OpenAI-compatible server, coding agents in the same window. LAN only, no accounts, no telemetry."
+    />
+    <meta property="og:url" content="https://klepai.pages.dev/" />
+    <meta property="og:image" content="https://klepai.pages.dev/assets/transparent/klepai-sign-trans.png" />
+    <meta property="og:image:width" content="600" />
+    <meta property="og:image:height" content="363" />
+    <meta property="og:image:alt" content="The Klepai sign — wordmark and glyph on a transparent background" />
+    <meta name="twitter:card" content="summary_large_image" />
     <style>
       :root {
         /* CRS-Theme (tweakcn) — dark variant. Primary + ring are 1:1 from the
@@ -19,9 +34,9 @@
         --muted: #1f1f1f;
         --muted-foreground: #a3a3a3;
         --border: #262626;
-        --primary: #2bc585;
-        --primary-foreground: #212b27;
-        --ring: #8ee9be;
+        --primary: #d4af37;
+        --primary-foreground: #262009;
+        --ring: #ecd28c;
 
         color-scheme: dark;
       }
@@ -59,199 +74,553 @@
 
       main {
         flex: 1;
-        position: relative;
-        width: 100%;
-        max-width: 56rem;
+      }
+
+      .top,
+      .hero,
+      .features,
+      .extras,
+      .first-run,
+      .roadmap,
+      .cta,
+      footer {
+        max-width: 1080px;
         margin: 0 auto;
-        padding: 5rem 1.5rem 4rem;
+        padding: 0 20px;
       }
 
-      .logo {
-        display: block;
-        width: 96px;
-        height: 96px;
-        border-radius: 1.25rem;
-        border: 1px solid var(--border);
-        box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 8%, transparent);
-        margin-bottom: 1.75rem;
+      .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-top: 20px;
       }
 
-      h1 {
-        font-size: clamp(2rem, 5vw, 3.25rem);
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--foreground);
         font-weight: 700;
-        letter-spacing: -0.03em;
-        line-height: 1.15;
-        text-wrap: balance;
-        background: linear-gradient(100deg, var(--foreground) 30%, var(--primary));
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        font-size: 1.25rem;
+        text-decoration: none;
+      }
+      .brand img {
+        height: 40px;
+        width: auto;
+        display: block;
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+      }
+      .nav-links a {
+        color: var(--muted-foreground);
+        text-decoration: none;
+        font-size: 0.9rem;
+        padding: 10px 12px;
+        border-radius: 8px;
+      }
+      .nav-links a:hover {
+        color: var(--foreground);
+        background: var(--card);
+      }
+      @media (max-width: 720px) {
+        .nav-links {
+          display: none;
+        }
       }
 
-      .tagline {
-        max-width: 44rem;
-        margin-top: 1.25rem;
-        font-size: 1.125rem;
+      .header-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--card);
         color: var(--muted-foreground);
       }
-
-      .cta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-        margin-top: 2rem;
+      .icon-btn:hover {
+        color: var(--foreground);
+      }
+      .icon-btn svg {
+        width: 20px;
+        height: 20px;
       }
 
+      .hero {
+        text-align: center;
+        padding-top: 48px;
+        padding-bottom: 24px;
+      }
+      .hero-logo {
+        width: min(210px, 56vw);
+        height: auto;
+        margin: 0 auto;
+        display: block;
+      }
+      h1 {
+        font-size: clamp(1.8rem, 5vw, 3rem);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+      }
+      .pitch {
+        color: var(--muted-foreground);
+        font-size: 1.1rem;
+        max-width: 42rem;
+        margin: 16px auto 0;
+      }
+      .badges {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 20px;
+      }
+      .badge {
+        padding: 4px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--muted-foreground);
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .downloads {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 20px;
+      }
       .btn {
         display: inline-flex;
         align-items: center;
-        gap: 0.375rem;
-        padding: 0.625rem 1.25rem;
-        border-radius: 0.625rem;
-        border: 1px solid transparent;
-        font-size: 0.9375rem;
-        font-weight: 600;
-        text-decoration: none;
-        transition: filter 150ms ease, border-color 150ms ease;
-      }
-
-      .btn:hover {
-        filter: brightness(1.1);
-      }
-
-      .btn-primary {
-        background: var(--primary);
-        color: var(--primary-foreground);
-      }
-
-      .btn-ghost {
-        border-color: var(--border);
-        color: var(--foreground);
-        background: transparent;
-      }
-
-      .btn-ghost:hover {
-        filter: none;
-        border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
-      }
-
-      .btn .arrow {
-        font-size: 0.8em;
-        opacity: 0.75;
-      }
-
-      ul#features {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-        gap: 1rem;
-        margin-top: 3rem;
-        padding: 0;
-        list-style: none;
-      }
-
-      ul#features li {
-        padding: 1.5rem 1.5rem 1.75rem;
+        justify-content: center;
+        min-height: 44px;
+        padding: 10px 20px;
         border: 1px solid var(--border);
-        border-radius: 1rem;
+        border-radius: 10px;
         background: var(--card);
-        color: var(--card-foreground);
-        transition: border-color 150ms ease;
-      }
-
-      ul#features li:hover {
-        border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
-      }
-
-      ul#features h3 {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
+        color: var(--foreground);
         font-size: 1rem;
         font-weight: 600;
+        text-decoration: none;
       }
-
-      ul#features h3::before {
-        content: "";
-        width: 0.5rem;
-        height: 0.5rem;
-        border-radius: 999px;
+      .btn-primary {
         background: var(--primary);
-        box-shadow: 0 0 8px var(--primary);
-        flex: none;
+        border-color: var(--primary);
+        color: var(--primary-foreground);
       }
-
-      ul#features p {
-        margin-top: 0.5rem;
-        font-size: 0.9375rem;
+      .btn-ghost {
+        background: transparent;
+        font-weight: 400;
         color: var(--muted-foreground);
       }
+      .demo-frame {
+        margin: 36px auto 0;
+        max-width: 720px;
+      }
+      .demo-frame img {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+      }
 
-      .alpha-pill {
-        display: inline-block;
-        margin-left: 0.375rem;
-        padding: 0.05rem 0.5rem;
-        border: 1px solid color-mix(in srgb, var(--primary) 60%, transparent);
-        border-radius: 999px;
-        font-size: 0.6875rem;
+      /* The three Alpha capabilities — the contract <ul>, each li a card. */
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        padding-top: 48px;
+        list-style: none;
+      }
+      .features li {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .features h2 {
+        font-size: 1.05rem;
+        margin-bottom: 8px;
+        color: var(--primary);
+      }
+      .features p {
+        color: var(--muted-foreground);
+        font-size: 0.95rem;
+      }
+
+      /* Beyond-Alpha capability cards — icon + heading, umux-style. */
+      .extras {
+        padding-top: 16px;
+      }
+      .extras-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .extra {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .extra-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .extra-head h2 {
+        font-size: 1.05rem;
+        margin: 0;
+      }
+      .extra-head svg {
+        width: 18px;
+        height: 18px;
+        color: var(--primary);
+        flex: none;
+      }
+      .extra p {
+        color: var(--muted-foreground);
+        font-size: 0.95rem;
+      }
+      .extra p code,
+      .first-run p code {
+        color: var(--primary);
+        font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .first-run {
+        padding-top: 48px;
+        padding-bottom: 24px;
+      }
+      .first-run h2 {
+        font-size: 1.05rem;
+        margin-bottom: 8px;
+      }
+      .first-run p,
+      .first-run li {
+        color: var(--muted-foreground);
+        font-size: 0.95rem;
+      }
+      .first-run ul {
+        padding-left: 20px;
+        display: grid;
+        gap: 4px;
+      }
+      .first-run a,
+      .roadmap a,
+      footer a {
+        color: var(--primary);
+        text-decoration: none;
+      }
+
+      /* Roadmap: every shipped Alpha capability and what's next, one short
+         line each. */
+      .roadmap {
+        padding-top: 40px;
+        padding-bottom: 24px;
+      }
+      .roadmap > h2 {
+        font-size: clamp(1.4rem, 3vw, 1.8rem);
+        letter-spacing: -0.01em;
+        text-align: center;
+        margin-bottom: 8px;
+      }
+      .roadmap > .section-lead {
+        color: var(--muted-foreground);
+        text-align: center;
+        max-width: 46rem;
+        margin: 0 auto 28px;
+        font-size: 0.98rem;
+      }
+      .timeline {
+        max-width: 760px;
+        margin: 0 auto;
+        display: grid;
+        gap: 10px;
+      }
+      .timeline-item {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 18px;
+      }
+      .timeline-item .version {
+        flex: none;
+        min-width: 88px;
+        font: 700 0.9rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--primary);
+      }
+      .timeline-item .what {
+        color: var(--muted-foreground);
+        font-size: 0.93rem;
+      }
+      .timeline-item .what strong {
+        color: var(--foreground);
         font-weight: 600;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--ring);
-        vertical-align: middle;
+      }
+      .timeline-item.now {
+        border-color: var(--primary);
+      }
+      .timeline-item.now .version::after {
+        content: " · current";
+        font-weight: 400;
+        font-size: 0.72rem;
+        color: var(--muted-foreground);
+        white-space: nowrap;
+      }
+
+      /* Final call-to-action band. */
+      .cta {
+        text-align: center;
+        padding-top: 56px;
+        padding-bottom: 8px;
+      }
+      .cta h2 {
+        font-size: clamp(1.3rem, 3vw, 1.7rem);
+        letter-spacing: -0.01em;
+      }
+      .cta p {
+        color: var(--muted-foreground);
+        margin-top: 8px;
+      }
+      .cta-actions {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 20px;
+      }
+
+      /* Hover motion — pure CSS, no JS; reduced-motion users get none. */
+      .features li,
+      .extra,
+      .btn,
+      .icon-btn {
+        transition: transform 0.18s ease, border-color 0.18s ease,
+          box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+      }
+      .features li:hover,
+      .extra:hover {
+        transform: translateY(-3px);
+        border-color: #3b3b3b;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+      }
+      .btn:hover,
+      .icon-btn:hover {
+        border-color: #3b3b3b;
+      }
+      .btn:active,
+      .icon-btn:active {
+        transform: scale(0.98);
+      }
+      .btn:focus-visible,
+      .icon-btn:focus-visible,
+      .nav-links a:focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: 2px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .features li:hover,
+        .extra:hover,
+        .btn:active,
+        .icon-btn:active {
+          transform: none;
+        }
       }
 
       footer {
-        padding: 1.75rem 1.5rem;
         text-align: center;
         color: var(--muted-foreground);
-        font-size: 0.875rem;
+        font-size: 0.9rem;
+        padding-top: 24px;
+        padding-bottom: 40px;
       }
 
-      footer .brand {
-        color: var(--foreground);
-        font-weight: 600;
+      @media (max-width: 720px) {
+        .features,
+        .extras-grid {
+          grid-template-columns: 1fr;
+        }
+        .hero {
+          padding-top: 32px;
+        }
       }
     </style>
   </head>
   <body>
-    <main>
-      <img class="logo" src="assets/shaim-logo.png" alt="Shaim logo" width="96" height="96" />
-      <h1>Shaim — self-hosted LLM manager</h1>
-      <p class="tagline">
-        Your models, your hardware, your data. A desktop chat app that talks to your
-        own model servers over the LAN — no accounts, no telemetry, nothing in the cloud.
-      </p>
-      <div class="cta">
-        <a
-          class="btn btn-primary"
-          href="https://github.com/CrystalPlatforms/CRS-SHAIM"
-          target="_blank"
-          rel="noopener"
-        >GitHub <span class="arrow">↗</span></a>
-        <a
-          class="btn btn-ghost"
-          href="https://crystal-studio.dev"
-          target="_blank"
-          rel="noopener"
-        >Crystal Studio <span class="arrow">↗</span></a>
+    <header class="top">
+      <a class="brand" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">
+        <img src="assets/transparent/klepai-sign-trans.png" alt="Klepai sign" width="600" height="363" />
+      </a>
+      <nav class="nav-links" aria-label="Page sections">
+        <a href="#features">Features</a>
+        <a href="#roadmap">Roadmap</a>
+      </nav>
+      <div class="header-actions">
+        <a class="icon-btn" href="https://github.com/CrystalPlatforms/klepai" aria-label="Klepai on GitHub" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        </a>
+        <a class="icon-btn" href="https://crystal-studio.dev" aria-label="Crystal Studio website" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </a>
       </div>
-      <ul id="features">
+    </header>
+
+    <main>
+      <section class="hero">
+        <img class="hero-logo" src="assets/transparent/klepai-logo-trans.png" alt="Klepai logo" width="600" height="600" />
+        <h1>Klepai — self-hosted LLM manager</h1>
+        <p class="pitch">
+          A private, native-feeling desktop chat for your own models. Talk to
+          anything you host — Ollama first-class — stream answers with full
+          markdown, and bring coding agents into the very same window.
+        </p>
+        <div class="badges">
+          <span class="badge">LAN only</span>
+          <span class="badge">No accounts</span>
+          <span class="badge">No telemetry</span>
+          <span class="badge">Local SQLite</span>
+          <span class="badge">macOS · Windows · Linux</span>
+        </div>
+        <div class="downloads">
+          <a class="btn btn-primary" href="https://github.com/CrystalPlatforms/klepai/releases/latest">Download Klepai (Alpha)</a>
+          <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">Star on GitHub</a>
+        </div>
+
+        <figure class="demo-frame">
+          <img src="assets/transparent/klepai-sign-trans.png" alt="The Klepai sign — wordmark and glyph" width="600" height="363" />
+        </figure>
+      </section>
+
+      <!-- The three Alpha capabilities (PRD story 38) — the contract list. -->
+      <ul class="features" id="features">
         <li>
-          <h3>Connect anything</h3>
-          <p>Ollama first-class, plus any OpenAI-compatible server on your network.</p>
+          <h2>Your servers, one place</h2>
+          <p>
+            Connect Ollama and any OpenAI-compatible server on your LAN. Klepai
+            shows live online status and every available model, so you always
+            know what you can use right now.
+          </p>
         </li>
         <li>
-          <h3>Rich chat</h3>
-          <p>Streaming answers with markdown, code blocks, and thinking blocks.</p>
+          <h2>Rich chat</h2>
+          <p>
+            Streamed token-by-token with syntax-highlighted code blocks, tables,
+            thinking blocks, and a copy button — technical answers stay
+            readable.
+          </p>
         </li>
         <li>
-          <h3>Agents in chat<span class="alpha-pill">Alpha</span></h3>
-          <p>Drive Claude Code &amp; Codex straight from the conversation.</p>
+          <h2>Agents in chat — Alpha</h2>
+          <p>
+            Switch to Agent mode and talk to Claude Code or Codex CLI with
+            access to a chosen project folder, right next to your model chats.
+          </p>
         </li>
       </ul>
+
+      <section class="extras">
+        <div class="extras-grid">
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+              <h2>Skill library</h2>
+            </div>
+            <p>Import <code>.skill</code> packages or Markdown files, manage them in Settings, and invoke any of them from the <code>/</code> palette in every mode.</p>
+          </div>
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+              <h2>Permission gates</h2>
+            </div>
+            <p>Agents ask before they touch anything: approve a command once, for the conversation, or permanently — you see exactly what runs on your machine.</p>
+          </div>
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <h2>In-app updates</h2>
+            </div>
+            <p>Check for updates from the About screen and install with one click — download, apply, relaunch. Update bundles are signature-verified against GitHub Releases.</p>
+          </div>
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              <h2>Everything stays local</h2>
+            </div>
+            <p>Conversations live in a local SQLite database with full-text search — no accounts, no cloud, no telemetry. Delete a server and its history stays.</p>
+          </div>
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <h2>Images &amp; attachments</h2>
+            </div>
+            <p>Attach images for vision-capable models — by picker or a paste — and they stay visible in the thread. Agents receive real file paths they can read.</p>
+          </div>
+          <div class="extra">
+            <div class="extra-head">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              <h2>Export anywhere</h2>
+            </div>
+            <p>One conversation, six formats — Markdown, HTML, PDF, RTF, TXT and JSON — rendered from the very same history you see on screen.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="first-run">
+        <h2>First run — unsigned builds</h2>
+        <p>Klepai is free &amp; open source and ships without a paid code-signing certificate, so your system may ask for confirmation once:</p>
+        <ul>
+          <li><strong>macOS:</strong> right-click the app → <em>Open</em>, or System Settings → Privacy &amp; Security → <em>Open Anyway</em>.</li>
+          <li><strong>Windows:</strong> on the SmartScreen prompt choose <em>More info</em> → <em>Run anyway</em>.</li>
+          <li><strong>Linux:</strong> AppImage needs <code>chmod +x</code> once; .deb installs normally.</li>
+        </ul>
+      </section>
+
+      <section class="roadmap" id="roadmap">
+        <h2>Roadmap</h2>
+        <p class="section-lead">Where Klepai is, and where it goes next. Everything shipped lives in the <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">repository</a>.</p>
+        <div class="timeline">
+          <div class="timeline-item now">
+            <span class="version">v0.0.1</span>
+            <span class="what"><strong>Klepai Alpha</strong> — servers &amp; models with live status, streamed rich chat, Agent mode (Claude Code &amp; Codex), skill library with the <strong>/</strong> palette, permission gates, chat export, images &amp; attachments, in-app updates.</span>
+          </div>
+          <div class="timeline-item">
+            <span class="version">next</span>
+            <span class="what">First public release: signed update bundles live on GitHub Releases, per-platform installers for macOS, Windows and Linux.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta">
+        <h2>Ready to run your models in Klepai?</h2>
+        <p>Free &amp; open source — no accounts, no cookies, no nonsense.</p>
+        <div class="cta-actions">
+          <a class="btn btn-primary" href="https://github.com/CrystalPlatforms/klepai/releases/latest">Download Klepai</a>
+          <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">Star on GitHub</a>
+        </div>
+      </section>
     </main>
+
     <footer>
-      <span class="brand">Shaim</span> — by CrystalPlatforms · Alpha v.0.0.1
+      <p>
+        <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">github.com/CrystalPlatforms/klepai</a>
+        · Klepai — by CrystalPlatforms · Alpha v.0.0.1 · built with Tauri &amp; React
+      </p>
     </footer>
   </body>
 </html>

@@ -113,7 +113,7 @@ function sanitizeFilename(title: string): string {
 }
 
 function footerLine(date: Date): string {
-  return `Exported from Shaim — ${STAMP.format(date)}`;
+  return `Exported from Klepai — ${STAMP.format(date)}`;
 }
 
 // --- markdown & plain text -------------------------------------------------

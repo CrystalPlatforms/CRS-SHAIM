@@ -3,7 +3,7 @@
 //! keyboard navigation, so the palette behaves identically in Natural and
 //! Agent composers.
 
-/** Minimal shape of a Shaim library skill as the palette consumes it. */
+/** Minimal shape of a Klepai library skill as the palette consumes it. */
 export interface PaletteSkill {
   id: number;
   name: string;

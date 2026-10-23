@@ -18,18 +18,18 @@
 
 use std::path::PathBuf;
 
-use shaim_lib::store::Store;
+use klepai_lib::store::Store;
 
 /// Unique per-test temp dir; cleared before the run so leftovers never
 /// interfere.
 fn temp_db(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "shaim-tests-{}-{}",
+        "klepai-tests-{}-{}",
         std::process::id(),
         name
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    dir.join("shaim.db")
+    dir.join("klepai.db")
 }
 
 #[test]

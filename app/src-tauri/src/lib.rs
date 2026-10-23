@@ -4,6 +4,7 @@ pub mod commands;
 pub mod gateway;
 pub mod skills;
 pub mod store;
+pub mod updater_probe;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
@@ -31,14 +32,27 @@ pub struct AppState {
     pub permissions: Mutex<HashMap<String, commands::PendingPermission>>,
 }
 
+/// The pre-flight the frontend runs BEFORE touching the updater plugin
+/// (issue #33): "unconfigured" and "no-release" are quiet expected states,
+/// not errors — see updater_probe.rs for the reasoning.
+#[tauri::command]
+async fn updater_status(app: tauri::AppHandle) -> updater_probe::UpdaterStatus {
+    if !updater_probe::pubkey_configured(&app) {
+        return updater_probe::UpdaterStatus::Unconfigured;
+    }
+    updater_probe::probe_latest_json(&app).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            let store = store::Store::open(&data_dir.join("shaim.db"))?;
+            let store = store::Store::open(&data_dir.join("klepai.db"))?;
             let skills = skills::SkillStore::open(&data_dir.join("skills"))?;
             app.manage(AppState {
                 store: Mutex::new(store),
@@ -94,6 +108,7 @@ pub fn run() {
             commands::list_allowed_commands,
             commands::delete_allowed_command,
             commands::respond_permission,
+            updater_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
-import type { CsvRow } from "@/lib/shaimBlocks";
+import type { CsvRow } from "@/lib/klepaiBlocks";
 import { cn } from "@/lib/utils";
 
 /**
- * Data table (issue #22): the assistant's `shaim-table` directive rendered
+ * Data table (issue #22): the assistant's `klepai-table` directive rendered
  * as an interactive table — click a header to sort, the sticky header keeps
  * the columns readable on long lists.
  */
@@ -38,7 +38,7 @@ export function DataTable({ header, rows }: { header: CsvRow; rows: CsvRow[] }) 
 
   return (
     <div
-      data-shaim-table
+      data-klepai-table
       className="my-2 overflow-x-auto rounded-lg border border-border bg-card"
     >
       <div className="max-h-80 overflow-y-auto">

@@ -1,5 +1,5 @@
 //! Local tools for Agent mode with a server-model brain: the model calls
-//! them through standard function-calling, Shaim executes them on this
+//! them through standard function-calling, Klepai executes them on this
 //! machine — everything scoped to the conversation's project folder.
 
 use std::path::{Path, PathBuf};

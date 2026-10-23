@@ -1,4 +1,4 @@
-//! Store — sole owner of the Shaim SQLite file.
+//! Store — sole owner of the Klepai SQLite file.
 //!
 //! Deep module: the frontend never sees SQL. It talks to a narrow interface
 //! (conversations CRUD today; messages, search and forks come later) and this
@@ -107,7 +107,7 @@ pub struct Server {
 }
 
 /// Storage shape of an imported skill: `.skill` packages are unzipped
-/// folders, markdown skills are single files. Shaim never executes skill
+/// folders, markdown skills are single files. Klepai never executes skill
 /// scripts — it stores the files and this metadata row.
 #[derive(Debug, Clone, Serialize)]
 pub struct Skill {

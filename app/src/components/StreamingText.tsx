@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { stripShaimTodoBlocks } from "@/lib/shaimBlocks";
+import { stripKlepaiTodoBlocks } from "@/lib/klepaiBlocks";
 import { cn } from "@/lib/utils";
 
 /** How many tail tokens stay in the animated window. */
@@ -32,7 +32,7 @@ export function StreamingText({
   // line breaks and indentation survive the reveal. Goal-progress blocks
   // (even half-streamed ones) never reach the visible text.
   const tokens = useMemo(
-    () => stripShaimTodoBlocks(text).split(/(\s+)/),
+    () => stripKlepaiTodoBlocks(text).split(/(\s+)/),
     [text],
   );
   const [revealed, setRevealed] = useState(() =>
