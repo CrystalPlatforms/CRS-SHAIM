@@ -86,6 +86,9 @@ export type ChatStreamEvent =
       target: string;
     }
   | { type: "title_changed"; title: string }
+  /** The agent's CLI went silent mid-run — a nudge toward Stop instead of
+   * an endless spinner. */
+  | { type: "stalled"; seconds: number }
   | { type: "done"; message_id: number; content: string; thinking: string; aborted: boolean }
   /** Agent runs end with a full history push plus this marker. */
   | { type: "agent_done"; aborted: boolean; error: string | null }

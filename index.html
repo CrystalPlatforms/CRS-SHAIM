@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Klepai is a private, self-hosted LLM manager — a desktop chat app that connects to your own model servers over the LAN. Ollama first-class, agents in chat, local SQLite. No accounts, no telemetry."
+      content="Klepai is a private, self-hosted LLM manager: a desktop chat app that connects to your own model servers over the LAN. Ollama first-class, agents in chat, local SQLite. No accounts, no telemetry."
     />
     <title>Klepai — self-hosted LLM manager</title>
     <link rel="icon" type="image/png" href="assets/transparent/klepai-icon-trans.png" />
@@ -21,7 +21,7 @@
     <meta property="og:image" content="https://klepai.pages.dev/assets/transparent/klepai-sign-trans.png" />
     <meta property="og:image:width" content="600" />
     <meta property="og:image:height" content="363" />
-    <meta property="og:image:alt" content="The Klepai sign — wordmark and glyph on a transparent background" />
+    <meta property="og:image:alt" content="The Klepai sign: wordmark and glyph on a transparent background" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
       :root {
@@ -89,11 +89,16 @@
         padding: 0 20px;
       }
 
+      /* Header spread across the full page width, umux-style: brand left,
+         section links centered, icon buttons right. */
       .top {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
+        max-width: none;
         padding-top: 20px;
+        padding-left: 28px;
+        padding-right: 28px;
       }
 
       .brand {
@@ -112,7 +117,7 @@
       }
       .nav-links {
         display: flex;
-        gap: 4px;
+        gap: 12px;
       }
       .nav-links a {
         color: var(--muted-foreground);
@@ -134,6 +139,7 @@
       .header-actions {
         display: flex;
         gap: 8px;
+        justify-self: end;
       }
       .icon-btn {
         display: inline-flex;
@@ -257,6 +263,17 @@
       .features p {
         color: var(--muted-foreground);
         font-size: 0.95rem;
+      }
+      /* Per-tile screenshot — top of each card, hairline-framed like the demo. */
+      .features li img,
+      .extra img {
+        display: block;
+        width: 100%;
+        height: auto;
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--background);
       }
 
       /* Beyond-Alpha capability cards — icon + heading, umux-style. */
@@ -486,9 +503,10 @@
         <img class="hero-logo" src="assets/transparent/klepai-logo-trans.png" alt="Klepai logo" width="600" height="600" />
         <h1>Klepai — self-hosted LLM manager</h1>
         <p class="pitch">
-          A private, native-feeling desktop chat for your own models. Talk to
-          anything you host — Ollama first-class — stream answers with full
-          markdown, and bring coding agents into the very same window.
+          A private, native-feeling desktop chat for the models you host.
+          Talk to any of them, with Ollama as a first-class option. Answers
+          stream in with full markdown, and coding agents can run in the
+          same window.
         </p>
         <div class="badges">
           <span class="badge">LAN only</span>
@@ -510,26 +528,29 @@
       <!-- The three Alpha capabilities (PRD story 38) — the contract list. -->
       <ul class="features" id="features">
         <li>
+          <img src="assets/shots/servers.png" alt="The server list with live online status and every available model" width="1886" height="1156" loading="lazy" />
           <h2>Your servers, one place</h2>
           <p>
             Connect Ollama and any OpenAI-compatible server on your LAN. Klepai
-            shows live online status and every available model, so you always
-            know what you can use right now.
+            shows which are online and lists every model each one serves.
           </p>
         </li>
         <li>
+          <img src="assets/shots/rich-chat.png" alt="A streamed answer with a syntax-highlighted code block" width="1886" height="1156" loading="lazy" />
           <h2>Rich chat</h2>
           <p>
-            Streamed token-by-token with syntax-highlighted code blocks, tables,
-            thinking blocks, and a copy button — technical answers stay
-            readable.
+            Answers stream in token by token. Code blocks get syntax
+            highlighting, tables and thinking blocks render as they should,
+            and every block has a copy button.
           </p>
         </li>
         <li>
+          <img src="assets/shots/agents.png" alt="Agent mode at work in a project folder" width="1950" height="1292" loading="lazy" />
           <h2>Agents in chat — Alpha</h2>
           <p>
-            Switch to Agent mode and talk to Claude Code or Codex CLI with
-            access to a chosen project folder, right next to your model chats.
+            Point Agent mode at a project folder. Your own server models do
+            the work with built-in tools, and Claude Code or Codex CLI can
+            step in as ready-made brains.
           </p>
         </li>
       </ul>
@@ -537,6 +558,7 @@
       <section class="extras">
         <div class="extras-grid">
           <div class="extra">
+            <img src="assets/shots/skills.png" alt="The skill library in Settings" width="1886" height="1156" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
               <h2>Skill library</h2>
@@ -544,45 +566,50 @@
             <p>Import <code>.skill</code> packages or Markdown files, manage them in Settings, and invoke any of them from the <code>/</code> palette in every mode.</p>
           </div>
           <div class="extra">
+            <img src="assets/shots/permission.png" alt="An agent permission ask with approve options" width="1886" height="1156" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
               <h2>Permission gates</h2>
             </div>
-            <p>Agents ask before they touch anything: approve a command once, for the conversation, or permanently — you see exactly what runs on your machine.</p>
+            <p>Agents ask before they touch anything. Approve a command once, for the conversation, or forever, and you see exactly what runs on your machine.</p>
           </div>
           <div class="extra">
+            <img src="assets/shots/version.png" alt="The About screen with the update check" width="1886" height="1156" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               <h2>In-app updates</h2>
             </div>
-            <p>Check for updates from the About screen and install with one click — download, apply, relaunch. Update bundles are signature-verified against GitHub Releases.</p>
+            <p>Check for updates from the About screen and install in one click: download, apply, relaunch. Update bundles are signature-verified against GitHub Releases.</p>
           </div>
           <div class="extra">
+            <img src="assets/shots/stays-local.png" alt="Full-text search over local conversations" width="858" height="488" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
               <h2>Everything stays local</h2>
             </div>
-            <p>Conversations live in a local SQLite database with full-text search — no accounts, no cloud, no telemetry. Delete a server and its history stays.</p>
+            <p>Conversations live in a local SQLite database with full-text search. No accounts, no cloud, no telemetry. Delete a server and its history stays.</p>
           </div>
           <div class="extra">
+            <img src="assets/shots/attachment.png" alt="A chat message with an attached image" width="1932" height="1170" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
               <h2>Images &amp; attachments</h2>
             </div>
-            <p>Attach images for vision-capable models — by picker or a paste — and they stay visible in the thread. Agents receive real file paths they can read.</p>
+            <p>Attach images for vision-capable models, by picker or paste. They stay visible in the thread, and agents get real file paths they can read.</p>
           </div>
           <div class="extra">
+            <img src="assets/shots/export.png" alt="The export dialog with six file formats" width="1028" height="622" loading="lazy" />
             <div class="extra-head">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
               <h2>Export anywhere</h2>
             </div>
-            <p>One conversation, six formats — Markdown, HTML, PDF, RTF, TXT and JSON — rendered from the very same history you see on screen.</p>
+            <p>Export one conversation as Markdown, HTML, PDF, RTF, TXT or JSON, rendered from the same history you see on screen.</p>
           </div>
         </div>
       </section>
 
       <section class="first-run">
-        <h2>First run — unsigned builds</h2>
+        <h2>First run with unsigned builds</h2>
         <p>Klepai is free &amp; open source and ships without a paid code-signing certificate, so your system may ask for confirmation once:</p>
         <ul>
           <li><strong>macOS:</strong> right-click the app → <em>Open</em>, or System Settings → Privacy &amp; Security → <em>Open Anyway</em>.</li>
@@ -593,11 +620,11 @@
 
       <section class="roadmap" id="roadmap">
         <h2>Roadmap</h2>
-        <p class="section-lead">Where Klepai is, and where it goes next. Everything shipped lives in the <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">repository</a>.</p>
+        <p class="section-lead">What shipped, and what comes next. Everything released lives in the <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">repository</a>.</p>
         <div class="timeline">
           <div class="timeline-item now">
             <span class="version">v0.0.1</span>
-            <span class="what"><strong>Klepai Alpha</strong> — servers &amp; models with live status, streamed rich chat, Agent mode (Claude Code &amp; Codex), skill library with the <strong>/</strong> palette, permission gates, chat export, images &amp; attachments, in-app updates.</span>
+            <span class="what"><strong>Klepai Alpha</strong>: servers and models with live status, streamed rich chat, Agent mode (server-model brains with built-in tools, Claude Code and Codex as add-ons), the skill library and its <strong>/</strong> palette, permission gates, chat export, images and attachments, in-app updates.</span>
           </div>
           <div class="timeline-item">
             <span class="version">next</span>
@@ -608,7 +635,7 @@
 
       <section class="cta">
         <h2>Ready to run your models in Klepai?</h2>
-        <p>Free &amp; open source — no accounts, no cookies, no nonsense.</p>
+        <p>Free and open source. No accounts, no cookies, no nonsense.</p>
         <div class="cta-actions">
           <a class="btn btn-primary" href="https://github.com/CrystalPlatforms/klepai/releases/latest">Download Klepai</a>
           <a class="btn btn-ghost" href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">Star on GitHub</a>
@@ -619,7 +646,7 @@
     <footer>
       <p>
         <a href="https://github.com/CrystalPlatforms/klepai" target="_blank" rel="noopener">github.com/CrystalPlatforms/klepai</a>
-        · Klepai — by CrystalPlatforms · Alpha v.0.0.1 · built with Tauri &amp; React
+        · Klepai by CrystalPlatforms · Alpha v.0.0.1 · built with Tauri &amp; React
       </p>
     </footer>
   </body>

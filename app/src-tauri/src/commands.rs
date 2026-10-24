@@ -209,6 +209,9 @@ pub async fn respond_permission(
             tool_name,
             conversation_id,
         } => {
+            crate::agent::agent_log(&format!(
+                "permission-answer request_id={request_id} allow={allow} tool={tool_name}"
+            ));
             stdin.write_line(&control_response_line(&request_id, allow, &input_json));
             let target = permission_target(&tool_name, &input_json);
             (tool_name, target, conversation_id)
@@ -950,6 +953,9 @@ pub enum ChatStreamEvent {
     /// `Done` appends exactly one message, an agent run persists many
     /// segments, so the UI reloads instead of appending.
     AgentDone { aborted: bool, error: Option<String> },
+    /// The agent's CLI went silent mid-run (see `agent::AgentEvent::Stalled`)
+    /// — the UI nudges the user toward Stop instead of an endless spinner.
+    Stalled { seconds: u64 },
     Error { message: String },
 }
 
@@ -1428,6 +1434,9 @@ pub async fn send_agent_message(
                                     Ok(ref rules)
                                         if auto_allowed(rules, &tool_name, &target) =>
                                     {
+                                        crate::agent::agent_log(&format!(
+                                            "permission auto-allow (rule) request_id={request_id} tool={tool_name} target={target}"
+                                        ));
                                         permission_stdin.write_line(&control_response_line(
                                             &request_id, true, &input_json,
                                         ));
@@ -1458,6 +1467,10 @@ pub async fn send_agent_message(
                             }
                             // The runner folds Failed events into the outcome.
                             AgentEvent::Failed { .. } => Some(ChatStreamEvent::ActivityEnd),
+                            // Silence watchdog — rides to the UI as-is.
+                            AgentEvent::Stalled { seconds } => {
+                                Some(ChatStreamEvent::Stalled { seconds })
+                            }
                             // Turn boundary — the runner closed stdin, the
                             // UI learns nothing new.
                             AgentEvent::TurnEnd => None,

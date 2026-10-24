@@ -34,6 +34,35 @@ const MAX_ACTIVITY_DETAIL: usize = 8192;
 /// Stop responsive even when the agent produces nothing for a while.
 const ABORT_POLL: Duration = Duration::from_millis(150);
 
+/// The silence watchdog: after this many seconds without a single stdout
+/// line the runner raises `Stalled` (the CLI may be stuck on a hung model
+/// call), then re-raises every `STALL_REPEAT_SECS` while the silence lasts.
+const STALL_FIRST_SECS: u64 = 90;
+const STALL_REPEAT_SECS: u64 = 45;
+
+/// How often a stalled run may be killed and resumed from the CLI's own
+/// persisted transcript (`--resume`). Two shots, then the hint takes over
+/// and the user decides.
+const MAX_STALL_RECOVERIES: u32 = 2;
+
+/// The prompt a resumed session continues from — short and imperative; the
+/// CLI reloads the whole transcript from disk, so no context is lost.
+const RESUME_PROMPT: &str = "Continue from where you stopped.";
+
+/// The CLI tags every stream line with its session id — the handle a stalled
+/// run needs for `--resume`.
+fn extract_session_id(line: &str) -> Option<String> {
+    const KEY: &str = "\"session_id\":\"";
+    let start = line.find(KEY)? + KEY.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    if end == 0 {
+        None
+    } else {
+        Some(rest[..end].to_string())
+    }
+}
+
 /// One streamed piece of agent output. Text deltas fold into assistant
 /// messages; activity pieces fold into collapsible tool/activity blocks.
 #[derive(Debug, Clone)]
@@ -59,6 +88,11 @@ pub enum AgentEvent {
     /// the CLI would otherwise idle forever waiting for the next message —
     /// the runner closes stdin here so the process exits cleanly.
     TurnEnd,
+    /// The CLI went silent mid-run (no stdout for 90s, re-raised every 45s
+    /// while the silence lasts). A hung model call reads as an eternal
+    /// spinner otherwise; this lets the UI nudge the user toward Stop.
+    /// Never fatal — a long install can legitimately be quiet for a while.
+    Stalled { seconds: u64 },
     /// The agent reported its own failure (the stream still ends normally).
     Failed { message: String },
 }
@@ -96,6 +130,9 @@ pub struct AgentOutcome {
     pub segments: Vec<Segment>,
     pub aborted: bool,
     pub error: Option<String>,
+    /// The CLI's session id, when the brain reports one — the handle a stall
+    /// recovery needs for `--resume`.
+    pub session_id: Option<String>,
 }
 
 /// How much of the computer the agent may touch. Natural mode chats through
@@ -135,6 +172,15 @@ pub trait AgentAdapter: Send {
     fn initial_stdin(&self, access: AgentAccess, prompt: &str) -> Option<String> {
         let _ = (access, prompt);
         None
+    }
+    /// Whether a stalled run may be killed and continued from the CLI's own
+    /// persisted transcript. Only brains with on-disk sessions qualify.
+    fn supports_resume(&self) -> bool {
+        false
+    }
+    /// Extra arguments that continue a persisted session on a fresh child.
+    fn resume_args(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
     }
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent>;
 }
@@ -273,6 +319,53 @@ pub fn permission_target(tool_name: &str, input_json: &str) -> String {
 #[derive(Clone, Default)]
 pub struct StdinHandle(Arc<std::sync::Mutex<Option<tokio::process::ChildStdin>>>);
 
+/// Best-effort LOCAL debug log for agent runs — raw CLI stdout lines, stdin
+/// writes and run lifecycle. Diagnoses stalled runs (e.g. an endless
+/// "Fetching..." after a permission answer). Never leaves the machine;
+/// `KLEPAI_AGENT_LOG=0` turns it off; the file restarts past 2 MiB.
+pub fn agent_log(line: &str) {
+    use std::io::Write;
+    if std::env::var_os("KLEPAI_AGENT_LOG").is_some_and(|v| v == "0") {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let dir = std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join("Library/Logs"));
+    #[cfg(not(target_os = "macos"))]
+    let dir = std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join(".local/state/klepai"));
+    let Some(dir) = dir else { return };
+    let path = dir.join("Klepai-agent.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 2 * 1024 * 1024 {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    // Cap each entry — tool inputs and stream deltas can be huge.
+    const MAX: usize = 1200;
+    let trimmed: String = if line.len() > MAX {
+        let mut cut = MAX;
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…[+{}B]", &line[..cut], line.len() - MAX)
+    } else {
+        line.to_string()
+    };
+    let _ = writeln!(file, "[{secs}] {trimmed}");
+}
+
 impl StdinHandle {
     /// Writes one newline-terminated line. `false` when there is no runtime
     /// or the run already ended (the writer is gone) — a late answer just
@@ -291,10 +384,17 @@ impl StdinHandle {
                 guard.take()
             };
             let Some(mut pipe) = pipe else {
+                agent_log("stdin-write DROPPED — the run already released stdin");
                 return;
             };
-            let _ = pipe.write_all(line.as_bytes()).await;
-            let _ = pipe.flush().await;
+            let wrote = pipe.write_all(line.as_bytes()).await;
+            let flushed = pipe.flush().await;
+            agent_log(&format!(
+                "stdin-write bytes={} write_err={} flush_err={}",
+                line.len(),
+                wrote.is_err(),
+                flushed.is_err(),
+            ));
             // The CLI may ask again — the write end stays put.
             *stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pipe);
         });
@@ -350,132 +450,231 @@ impl AgentRunner {
         stdin: &StdinHandle,
         mut on_event: impl FnMut(AgentEvent),
     ) -> Result<AgentOutcome, AgentError> {
-        let intro = adapter.initial_stdin(access, prompt);
-        let mut command = adapter.build_command(cwd, prompt, access, model, images);
-        augment_path(&mut command);
-        match &intro {
-            Some(_) => {
-                command
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-            }
-            None => {
-                command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-            }
-        };
-        command.kill_on_drop(true);
-
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                AgentError::MissingBinary {
-                    binary: adapter.binary().to_string(),
-                    label: adapter.label(),
-                    install_hint: adapter.install_hint(),
-                }
-            } else {
-                AgentError::Spawn(error.to_string())
-            }
-        })?;
-
-        // The intro line (the prompt as a stream-json user message) goes out
-        // immediately; the write end stays reachable for permission answers.
-        if let Some(intro) = intro {
-            if let Some(mut pipe) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let _ = pipe.write_all(format!("{intro}\n").as_bytes()).await;
-                let _ = pipe.flush().await;
-                stdin.install(pipe);
-            }
-        }
-        let mut stdout = tokio::io::BufReader::new(
-            child
-                .stdout
-                .take()
-                .expect("agent child stdout should be piped"),
-        )
-        .lines();
-        // Stderr is only kept for error messages — a capped tail of it rides
-        // along when the run fails.
-        let stderr_tail = drain_stderr(
-            child
-                .stderr
-                .take()
-                .expect("agent child stderr should be piped"),
-        );
-
+        // Session recovery state, kept across attempts: a stall kills the
+        // child and the run continues with `--resume`, so one hung model
+        // call costs seconds instead of the whole turn.
         let mut fold = SegmentFolder::default();
         let mut failed: Option<String> = None;
         let mut aborted = false;
+        let mut session_id: Option<String> = None;
+        let mut resume_from: Option<String> = None;
+        let mut recoveries: u32 = 0;
 
-        loop {
-            if abort.is_aborted() {
-                let _ = child.start_kill();
-                aborted = true;
-                break;
-            }
-            let line = tokio::select! {
-                _ = tokio::time::sleep(ABORT_POLL) => continue,
-                item = stdout.next_line() => match item {
-                    Ok(Some(line)) => line,
-                    Ok(None) => break,
-                    Err(error) => {
-                        if abort.is_aborted() {
-                            aborted = true;
-                        } else {
-                            let _ = child.start_kill();
-                            failed = Some(format!("stdout read failed: {error}"));
-                        }
-                        break;
-                    }
-                },
+        'attempts: loop {
+            // A resumed attempt continues the persisted session instead of
+            // replaying the original prompt.
+            let effective_prompt: &str = if resume_from.is_some() {
+                RESUME_PROMPT
+            } else {
+                prompt
             };
+            let intro = adapter.initial_stdin(access, effective_prompt);
+            let mut command =
+                adapter.build_command(cwd, effective_prompt, access, model, images);
+            if let Some(session) = &resume_from {
+                for arg in adapter.resume_args(session) {
+                    command.arg(arg);
+                }
+            }
+            augment_path(&mut command);
+            match &intro {
+                Some(_) => {
+                    command
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                }
+                None => {
+                    command
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                }
+            };
+            command.kill_on_drop(true);
 
-            for event in adapter.parse_line(line.trim()) {
-                match event {
-                    AgentEvent::Failed { message } => failed = Some(message),
-                    AgentEvent::TurnEnd => {
-                        // Turn is over — closing stdin ends the CLI's
-                        // session so the run actually finishes instead of
-                        // idling with a "still generating" stream.
-                        stdin.release();
+            agent_log(&format!(
+                "spawn label={} cwd={} access={:?} model={} resume={}",
+                adapter.label(),
+                cwd.display(),
+                access,
+                model.as_deref().unwrap_or("default"),
+                resume_from.as_deref().unwrap_or("-"),
+            ));
+
+            let mut child = command.spawn().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    AgentError::MissingBinary {
+                        binary: adapter.binary().to_string(),
+                        label: adapter.label(),
+                        install_hint: adapter.install_hint(),
                     }
-                    other => {
-                        fold.apply(&other);
-                        on_event(other);
+                } else {
+                    AgentError::Spawn(error.to_string())
+                }
+            })?;
+
+            // The intro line (the prompt as a stream-json user message) goes
+            // out immediately; the write end stays reachable for permission
+            // answers.
+            if let Some(intro) = intro {
+                if let Some(mut pipe) = child.stdin.take() {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = pipe.write_all(format!("{intro}\n").as_bytes()).await;
+                    let _ = pipe.flush().await;
+                    stdin.install(pipe);
+                }
+            }
+            let mut stdout = tokio::io::BufReader::new(
+                child
+                    .stdout
+                    .take()
+                    .expect("agent child stdout should be piped"),
+            )
+            .lines();
+            // Stderr is only kept for error messages — a capped tail of it
+            // rides along when the run fails.
+            let stderr_tail = drain_stderr(
+                child
+                    .stderr
+                    .take()
+                    .expect("agent child stderr should be piped"),
+            );
+
+            // Silence watchdog: how long the CLI has written nothing, and
+            // the last stall threshold raised (the event re-fires as the
+            // silence grows).
+            let mut last_line_at = std::time::Instant::now();
+            let mut stalled_at: Option<u64> = None;
+            // An ask the CLI waits on reads as silence too — killing the
+            // child then would cut off the user's own decision. It clears
+            // on the next line (the tool result after an answer).
+            let mut ask_pending = false;
+
+            loop {
+                if abort.is_aborted() {
+                    let _ = child.start_kill();
+                    aborted = true;
+                    break;
+                }
+                let line = tokio::select! {
+                    _ = tokio::time::sleep(ABORT_POLL) => {
+                        let idle = last_line_at.elapsed().as_secs();
+                        if idle >= STALL_FIRST_SECS
+                            && stalled_at.is_none_or(|seen| idle >= seen + STALL_REPEAT_SECS)
+                        {
+                            stalled_at = Some(idle);
+                            // Self-healing first: kill + `--resume` beats an
+                            // endless spinner. Never while the CLI waits on
+                            // an unanswered ask, never for brains that
+                            // cannot resume, and only twice per run.
+                            if !ask_pending
+                                && recoveries < MAX_STALL_RECOVERIES
+                                && adapter.supports_resume()
+                                && session_id.is_some()
+                            {
+                                recoveries += 1;
+                                let session = session_id.clone().expect("checked above");
+                                agent_log(&format!(
+                                    "stall recovery {recoveries}/{MAX_STALL_RECOVERIES}: killing child, resuming session {session}"
+                                ));
+                                on_event(AgentEvent::ActivityStart {
+                                    title: "Recovering a stalled request".into(),
+                                });
+                                on_event(AgentEvent::ActivityEnd);
+                                let _ = child.start_kill();
+                                let _ = child.wait().await;
+                                stdin.release();
+                                resume_from = Some(session);
+                                continue 'attempts;
+                            }
+                            agent_log(&format!(
+                                "stalled {idle}s — CLI silent, raising Stalled"
+                            ));
+                            on_event(AgentEvent::Stalled { seconds: idle });
+                        }
+                        continue;
+                    }
+                    item = stdout.next_line() => match item {
+                        Ok(Some(line)) => {
+                            last_line_at = std::time::Instant::now();
+                            agent_log(&format!("cli-out {line}"));
+                            if let Some(id) = extract_session_id(&line) {
+                                session_id = Some(id);
+                            }
+                            line
+                        }
+                        Ok(None) => {
+                            agent_log("cli-out EOF — stdout closed");
+                            break
+                        }
+                        Err(error) => {
+                            agent_log(&format!("cli-out read failed: {error}"));
+                            if abort.is_aborted() {
+                                aborted = true;
+                            } else {
+                                let _ = child.start_kill();
+                                failed = Some(format!("stdout read failed: {error}"));
+                            }
+                            break;
+                        }
+                    },
+                };
+
+                let events = adapter.parse_line(line.trim());
+                ask_pending = events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::PermissionRequest { .. }));
+                for event in events {
+                    match event {
+                        AgentEvent::Failed { message } => failed = Some(message),
+                        AgentEvent::TurnEnd => {
+                            // Turn is over — closing stdin ends the CLI's
+                            // session so the run actually finishes instead
+                            // of idling with a "still generating" stream.
+                            stdin.release();
+                        }
+                        other => {
+                            fold.apply(&other);
+                            on_event(other);
+                        }
                     }
                 }
             }
-        }
 
-        // The run is over — closing stdin ends the CLI's turn cleanly and
-        // makes any late permission answer evaporate.
-        stdin.release();
+            // The attempt is over — closing stdin ends the CLI's turn
+            // cleanly and makes any late permission answer evaporate.
+            stdin.release();
 
-        // Observe the child's exit — after a kill this is what proves the
-        // process actually terminated.
-        let status = child
-            .wait()
-            .await
-            .map_err(|error| AgentError::Io(error.to_string()))?;
-        let tail = stderr_tail.tail();
+            // Observe the child's exit — after a kill this is what proves
+            // the process actually terminated.
+            let status = child
+                .wait()
+                .await
+                .map_err(|error| AgentError::Io(error.to_string()))?;
+            agent_log(&format!(
+                "run ended status={} failed={} aborted={}",
+                status.success(),
+                failed.is_some(),
+                aborted,
+            ));
+            let tail = stderr_tail.tail();
 
-        let mut outcome = fold.finish();
-        outcome.aborted = aborted;
-        if let Some(message) = failed {
-            outcome.error = Some(message);
-        } else if !aborted && !status.success() {
-            outcome.error = Some(AgentError::Exit {
-                code: status.code().unwrap_or(-1),
-                tail,
+            let mut outcome = fold.finish();
+            outcome.aborted = aborted;
+            outcome.session_id = session_id.clone();
+            if let Some(message) = failed {
+                outcome.error = Some(message);
+            } else if !aborted && !status.success() {
+                outcome.error = Some(AgentError::Exit {
+                    code: status.code().unwrap_or(-1),
+                    tail,
+                }
+                .to_string());
             }
-            .to_string());
+            // A killed agent usually exits non-zero — Stop wins, no error.
+            break 'attempts Ok(outcome);
         }
-        // A killed agent usually exits non-zero — Stop wins, no error.
-        Ok(outcome)
     }
 }
 
@@ -565,12 +764,18 @@ impl SegmentFolder {
             AgentEvent::PermissionRequest { .. } => {}
             // Turn boundaries fold to nothing.
             AgentEvent::TurnEnd => {}
+            // The silence watchdog rides through on_event only — it is a UI
+            // nudge, never a segment.
+            AgentEvent::Stalled { .. } => {}
             AgentEvent::Failed { message } => self.failed = Some(message.clone()),
         }
     }
 
     fn finish(self) -> AgentOutcome {
         AgentOutcome {
+            // Set by the runner after the last attempt — the folder never
+            // sees stream lines.
+            session_id: None,
             // Empty text segments (a text block that never received deltas)
             // would persist as blank assistant messages — drop them.
             segments: self
@@ -729,6 +934,15 @@ impl AgentAdapter for ClaudeCodeAdapter {
             return None;
         }
         Some(stream_json_user_message(prompt))
+    }
+
+    /// Claude persists every session to disk, so a stalled run can be killed
+    /// and picked up with `--resume` — the recovery path relies on this.
+    fn supports_resume(&self) -> bool {
+        true
+    }
+    fn resume_args(&self, session_id: &str) -> Vec<String> {
+        vec!["--resume".into(), session_id.to_string()]
     }
 
     fn parse_line(&mut self, line: &str) -> Vec<AgentEvent> {

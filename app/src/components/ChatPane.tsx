@@ -106,10 +106,13 @@ function ShowDetailsButton({ onClick }: { onClick: () => void }) {
 }
 
 /** An in-flight stream: natural-mode thinking plus the ordered pieces
- * (assistant text, activity blocks) both modes produce. */
+ * (assistant text, activity blocks) both modes produce. `stalled` counts
+ * seconds of CLI silence once the runner's watchdog fires (issue: hung model
+ * calls read as an eternal spinner otherwise). */
 interface StreamState {
   thinking: string;
   segments: StreamSegment[];
+  stalled: number | null;
 }
 
 /** One permission ask waiting for the user's decision (issue #28). */
@@ -560,7 +563,7 @@ export function ChatPane({
     let entry = streamsRef.current.get(conversationId);
     if (!entry) {
       entry = {
-        buffer: { thinking: "", segments: [] },
+        buffer: { thinking: "", segments: [], stalled: null },
         streaming: false,
         generationId: null,
         error: null,
@@ -704,6 +707,7 @@ export function ChatPane({
       setStream({
         thinking: entry.buffer.thinking,
         segments: [...entry.buffer.segments],
+        stalled: entry.buffer.stalled,
       });
       setStreamTodos(latestTodos(entry.buffer.segments));
     }
@@ -732,6 +736,7 @@ export function ChatPane({
     setStream({
       thinking: entry.buffer.thinking,
       segments: [...entry.buffer.segments],
+      stalled: entry.buffer.stalled,
     });
     setStreamTodos(latestTodos(entry.buffer.segments));
   }, []);
@@ -772,7 +777,7 @@ export function ChatPane({
     (conversationId: number, command: string, args: Record<string, unknown>) => {
       const entry = entryFor(conversationId);
       if (entry.streaming) return;
-      entry.buffer = { thinking: "", segments: [] };
+      entry.buffer = { thinking: "", segments: [], stalled: null };
       entry.error = null;
       entry.generationId = null;
       entry.streaming = true;
@@ -781,7 +786,7 @@ export function ChatPane({
       onErrorChanged(conversationId, false);
       setError(null);
       if (displayedIdRef.current === conversationId) {
-        setStream({ thinking: "", segments: [] });
+        setStream({ thinking: "", segments: [], stalled: null });
         setPermission(null);
         setStreamTodos(null);
         // Sending always means "show me the latest" — even if the user had
@@ -794,6 +799,10 @@ export function ChatPane({
       channel.onmessage = (event) => {
         // Stable for the conversation's lifetime — closures capture it.
         const live = entry;
+        // Any real progress clears the silence watchdog hint.
+        if (event.type !== "stalled" && live.buffer.stalled !== null) {
+          live.buffer.stalled = null;
+        }
         switch (event.type) {
           case "user_message":
             // A background conversation's thread reloads from the store on
@@ -896,6 +905,9 @@ export function ChatPane({
             break;
           case "title_changed":
             onConversationsChanged();
+            break;
+          case "stalled":
+            live.buffer.stalled = event.seconds;
             break;
           case "done": {
             live.streaming = false;
@@ -1723,7 +1735,7 @@ export function ChatPane({
           </div>
         )}
         <h2 className="font-display text-9xl leading-none animate-fade-in">
-          Klepai
+          KLEPAI
         </h2>
       </section>
     );
@@ -2551,8 +2563,8 @@ function ModelPopup({
     serverId?: number;
     active: boolean;
   }[] = [
-    { key: "claude_code", label: "Claude Code", kind: "claude_code", active: conversation.agent_kind === "claude_code" },
-    { key: "codex", label: "Codex", kind: "codex", active: conversation.agent_kind === "codex" },
+    // Server models first — they are the point of Klepai; the CLIs are
+    // add-on brains.
     ...servers.map((server) => ({
       key: `server-${server.id}`,
       label: server.name,
@@ -2563,6 +2575,8 @@ function ModelPopup({
         (conversation.server_id === server.id ||
           (conversation.server_id === null && servers[0]?.id === server.id)),
     })),
+    { key: "claude_code", label: "Claude Code", kind: "claude_code", active: conversation.agent_kind === "claude_code" },
+    { key: "codex", label: "Codex", kind: "codex", active: conversation.agent_kind === "codex" },
   ];
 
   const currentModel = conversation.model_id ?? "default";
@@ -2731,6 +2745,12 @@ function StreamingMessage({ stream }: { stream: StreamState }) {
           ) : (
             <StreamingActivity key={index} segment={segment} />
           ),
+        )}
+        {stream.stalled != null && (
+          <p className="animate-fade-in text-xs text-muted-foreground">
+            No response for {stream.stalled}s. The agent may be stuck; you can
+            stop it and send again.
+          </p>
         )}
       </div>
     </div>

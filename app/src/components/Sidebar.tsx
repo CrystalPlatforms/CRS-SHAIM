@@ -122,7 +122,7 @@ export function Sidebar({
         )}
       >
         <header className="flex items-center gap-1 px-4 py-2.5">
-          <h1 className="font-display text-lg">Klepai</h1>
+          <h1 className="font-display text-lg">KLEPAI</h1>
           <div className="ml-auto flex items-center">
             <Button
               variant="ghost"

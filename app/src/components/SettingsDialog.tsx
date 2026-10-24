@@ -1128,8 +1128,10 @@ function DefaultsTab({ open }: { open: boolean }) {
 // ---- About tab -------------------------------------------------------------
 
 // UpdatesStatus — the one-line readout under the Check button, one branch per
-// UpdateState kind. Error states (including the quiet "not-configured" and
-// "no-release" outcomes) render their canonical sentence from updater.ts.
+// UpdateState kind. Error states (including the quiet "not-configured"
+// outcome) render their canonical sentence from updater.ts. A missing feed
+// ("no-release" — no signed release ships a latest.json yet) reads exactly
+// like "up-to-date": to the user the installed build simply is the newest.
 function UpdatesStatus({ state, appVersion }: { state: UpdateState; appVersion: string | null }) {
   switch (state.kind) {
     case "idle":
@@ -1137,16 +1139,10 @@ function UpdatesStatus({ state, appVersion }: { state: UpdateState; appVersion: 
     case "checking":
       return <p className="text-xs text-muted-foreground">Checking for updates…</p>;
     case "up-to-date":
-      return (
-        <p className="text-xs text-muted-foreground">
-          Klepai is up to date{appVersion != null ? ` (${appVersion})` : ""}.
-        </p>
-      );
     case "no-release":
       return (
         <p className="text-xs text-muted-foreground">
-          No update information published yet — new releases appear here once they
-          ship an update file.
+          Klepai is up to date{appVersion != null ? ` (${appVersion})` : ""}.
         </p>
       );
     case "available":
@@ -1226,16 +1222,9 @@ function AboutTab() {
 
   return (
     <div className="flex flex-col items-center gap-1 py-6 text-center">
-      <img
-        src="/klepai-logo.png"
-        alt="Klepai logo"
-        width={72}
-        height={72}
-        className="mb-2 rounded-xl"
-      />
-      <h3 className="font-display text-4xl">Klepai</h3>
+      <h3 className="font-display text-4xl">KLEPAI</h3>
       <p className="text-sm text-foreground">
-        Klepai Alpha{appVersion != null ? ` v.${appVersion}` : ""}
+        Alpha{appVersion != null ? ` v.${appVersion}` : ""}
       </p>
       <p className="text-xs text-muted-foreground">CrystalPlatforms</p>
 
